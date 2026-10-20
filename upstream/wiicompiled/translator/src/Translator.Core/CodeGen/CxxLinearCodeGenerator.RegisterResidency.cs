@@ -159,13 +159,29 @@ public sealed partial class CxxLinearCodeGenerator
         /// liveness-narrowed initialization is a later optimization and reading
         /// an architectural register is always well defined.
         /// </summary>
-        public void AppendEntryLoads(StringBuilder sb)
+        public void AppendEntryLoads(StringBuilder sb) => AppendEntryLoads(sb, 0u, 0u);
+
+        /// <summary>
+        /// Entry loads; registers in the local masks start at zero instead
+        /// (<see cref="Translator.Core.Analysis.GuestEabiVisibility.Localizes"/>).
+        /// </summary>
+        public void AppendEntryLoads(StringBuilder sb, uint localGprMask, uint localFprMask)
         {
             if (_recording) return;
             foreach (var gpr in _gprs)
-                sb.Append("    uint32_t ").Append(GprLocal(gpr)).Append(" = ctx->gpr[").Append(gpr).AppendLine("];");
+            {
+                if ((localGprMask & (1u << gpr)) != 0)
+                    sb.Append("    uint32_t ").Append(GprLocal(gpr)).AppendLine(" = 0;");
+                else
+                    sb.Append("    uint32_t ").Append(GprLocal(gpr)).Append(" = ctx->gpr[").Append(gpr).AppendLine("];");
+            }
             foreach (var fpr in _fprs)
-                sb.Append("    PPC_FPR ").Append(FprLocal(fpr)).Append(" = ctx->fpr[").Append(fpr).AppendLine("];");
+            {
+                if ((localFprMask & (1u << fpr)) != 0)
+                    sb.Append("    PPC_FPR ").Append(FprLocal(fpr)).AppendLine("{};");
+                else
+                    sb.Append("    PPC_FPR ").Append(FprLocal(fpr)).Append(" = ctx->fpr[").Append(fpr).AppendLine("];");
+            }
             if (_cr) sb.AppendLine($"    uint32_t {CrLocal} = ctx->cr;");
             if (_ctr) sb.AppendLine($"    uint32_t {CtrLocal} = ctx->ctr;");
             if (_xer) sb.AppendLine($"    uint32_t {XerLocal} = ctx->xer;");
@@ -272,6 +288,45 @@ public sealed partial class CxxLinearCodeGenerator
             ReloadsCtr: false,
             FlushesXer: false,
             ReloadsXer: false);
+
+        /// <summary>
+        /// A call whose callee wants the complete context but is trusted as an EABI function
+        /// (<see cref="Translator.Core.Analysis.GuestEabiVisibility.TrustFences"/>): everything is
+        /// published, and only the results come back. The nonvolatiles are the callee's to restore,
+        /// and the volatile rest is dead after a call.
+        /// </summary>
+        public static ResidencyBoundarySync EabiFencedCall { get; } = Full with
+        {
+            // The callee does not read r14-r31/f14-f31 for anything but saving them.
+            FlushGprMask = Translator.Core.Analysis.GuestEabiVisibility.LocalizeNonvolatile
+                ? ~Translator.Core.Analysis.GuestEabiVisibility.LocalGpr
+                : uint.MaxValue,
+            FlushFprMask = Translator.Core.Analysis.GuestEabiVisibility.LocalizeNonvolatile
+                ? ~Translator.Core.Analysis.GuestEabiVisibility.LocalFpr
+                : uint.MaxValue,
+            ReloadGprMask = Translator.Core.Analysis.GuestEabiVisibility.ReturnGpr,
+            ReloadFprMask = Translator.Core.Analysis.GuestEabiVisibility.ReturnFpr,
+            ReloadsCr = false,
+            ReloadsCtr = false,
+            ReloadsXer = false
+        };
+
+        /// <summary>
+        /// <see cref="EabiReturn"/> for a body that writes no nonvolatile CR field: CR stays out of
+        /// CpuContext, so a compare result nothing reads again is dead and is not computed at all.
+        /// </summary>
+        public static ResidencyBoundarySync EabiReturnNoCr { get; } = EabiReturn with { FlushesCr = false };
+
+        /// <summary>The return of a body that keeps r14-r31/f14-f31 local: those are never published.</summary>
+        public static ResidencyBoundarySync EabiReturnLocal { get; } = EabiReturn with
+        {
+            FlushGprMask = Translator.Core.Analysis.GuestEabiVisibility.VisibleGpr &
+                           ~Translator.Core.Analysis.GuestEabiVisibility.LocalGpr,
+            FlushFprMask = Translator.Core.Analysis.GuestEabiVisibility.VisibleFpr &
+                           ~Translator.Core.Analysis.GuestEabiVisibility.LocalFpr
+        };
+
+        public static ResidencyBoundarySync EabiReturnLocalNoCr { get; } = EabiReturnLocal with { FlushesCr = false };
 
         public bool FlushesGpr(int index) => (FlushGprMask & (1u << index)) != 0;
         public bool FlushesFpr(int index) => (FlushFprMask & (1u << index)) != 0;
@@ -384,6 +439,15 @@ public sealed partial class CxxLinearCodeGenerator
             return ResidencyBoundarySync.Full;
         }
 
+        if (contract.HasFullSynchronizationFence && GuestEabiVisibility.TrustsFencedCall(target))
+        {
+            // A callee that really uses incoming nonvolatiles (a jump-table case split out as a
+            // function, reached by a branch the translator turned into a call) is not an EABI
+            // function at all: it gets the exact boundary.
+            return contract.NonvolatileGprInputMask == 0 && contract.NonvolatileFprInputMask == 0
+                ? ResidencyBoundarySync.EabiFencedCall
+                : ResidencyBoundarySync.Full;
+        }
         return ResidencyBoundarySync.FromCalleeContract(contract);
     }
 

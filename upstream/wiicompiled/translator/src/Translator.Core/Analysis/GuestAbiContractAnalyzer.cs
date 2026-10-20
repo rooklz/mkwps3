@@ -48,6 +48,10 @@ public sealed record GuestAbiContract(
     public bool DefinitelyWritesFpscr { get; init; }
     public byte GqrDefiniteWriteMask { get; init; }
     public byte HidDefiniteWriteMask { get; init; }
+    // r14-r31 / f14-f31 whose incoming value the body uses for more than saving it in its frame.
+    // Compiled code never does; a jump-table case split out as its own function uses its parent's.
+    public uint NonvolatileGprInputMask { get; init; }
+    public uint NonvolatileFprInputMask { get; init; }
 
     public bool HasFullSynchronizationFence =>
         (BoundaryFlags & GuestCallBoundaryFlags.RequiresCompleteContext) != 0;
@@ -144,33 +148,131 @@ public static class GuestAbiContractAnalyzer
             }
         } while (changed);
 
+        // What every path has written, for telling a real use of an incoming nonvolatile. The
+        // definite sets above are too weak for that: their CFG has no fall-through edges and they
+        // start empty at loop back edges, so a register written before a loop looks unwritten in
+        // it. This one uses every edge and starts non-entry blocks at "everything" (a proper
+        // must-analysis), so it neither misses a loop head reached unwritten nor flags one that
+        // is written first.
+        var allPredecessors = new List<int>[blockCount];
+        for (var index = 0; index < blockCount; ++index) allPredecessors[index] = new List<int>();
+        for (var index = 0; index < blockCount; ++index)
+        {
+            var instructions = blockList[index].Instructions;
+            var terminator = instructions.Count == 0 ? null : instructions[instructions.Count - 1];
+            void AddEdge(string label)
+            {
+                if (ordinals.TryGetValue(label, out var target)) allPredecessors[target].Add(index);
+            }
+            switch (terminator)
+            {
+                case IrBranch branch:
+                    AddEdge(branch.TrueLabel);
+                    AddEdge(branch.FalseLabel);
+                    break;
+                case IrJump jump:
+                    AddEdge(jump.TargetLabel);
+                    break;
+                case IrJumpTable table:
+                    foreach (var tableCase in table.Cases) AddEdge(tableCase.TargetLabel);
+                    // A miss falls through to the next block (the dispatch default).
+                    if (index + 1 < blockCount) allPredecessors[index + 1].Add(index);
+                    break;
+                case IrReturn or IrIndirectJump or IrUndefined:
+                    break;
+                default:
+                    // No terminator: control falls through to the next block.
+                    if (index + 1 < blockCount) allPredecessors[index + 1].Add(index);
+                    break;
+            }
+        }
+        // SSA merges are transparent here: a phi names the same architectural register, so only
+        // real writes count, and a use after a merge is judged by whether every path wrote it.
+        var realWritesByBlock = new RegisterSet[blockCount];
+        for (var index = 0; index < blockCount; ++index)
+        {
+            var set = RegisterSet.Empty;
+            foreach (var instruction in blockList[index].Instructions)
+            {
+                if (instruction is IrPhi) continue;
+                Writes(instruction, calleeContracts, out _, out var definiteWrite);
+                set = set.Union(definiteWrite);
+            }
+            realWritesByBlock[index] = set;
+        }
+        var mustIn = new RegisterSet[blockCount];
+        var mustOut = new RegisterSet[blockCount];
+        for (var index = 0; index < blockCount; ++index)
+        {
+            var entry = blockList[index].Label == function.EntryLabel;
+            mustIn[index] = entry ? RegisterSet.Empty : FullState;
+            mustOut[index] = entry ? realWritesByBlock[index] : FullState;
+        }
+        do
+        {
+            changed = false;
+            for (var index = 0; index < blockCount; ++index)
+            {
+                if (blockList[index].Label == function.EntryLabel)
+                    continue;
+                var incoming = FullState;
+                foreach (var predecessor in allPredecessors[index])
+                    incoming = incoming.Intersect(mustOut[predecessor]);
+                var outgoing = incoming.Union(realWritesByBlock[index]);
+                if (incoming != mustIn[index] || outgoing != mustOut[index])
+                {
+                    mustIn[index] = incoming;
+                    mustOut[index] = outgoing;
+                    changed = true;
+                }
+            }
+        } while (changed);
+
         var readBeforeWrite = RegisterSet.Empty;
         var possibleWrites = RegisterSet.Empty;
         var directTargets = new SortedSet<uint>();
         var boundaryFlags = GuestCallBoundaryFlags.None;
+        var nonvolatileInputs = RegisterSet.Empty;
         for (var index = 0; index < blockCount; ++index)
         {
             var written = definiteIn[index];
+            var mustWritten = mustIn[index];
             var instructions = blockList[index].Instructions;
             for (var position = 0; position < instructions.Count; ++position)
             {
                 var instruction = instructions[position];
-                readBeforeWrite = readBeforeWrite.Union(Reads(instruction, calleeContracts).Except(written));
+                var instructionReads = Reads(instruction, calleeContracts).Except(written);
+                readBeforeWrite = readBeforeWrite.Union(instructionReads);
+                nonvolatileInputs = nonvolatileInputs.Union(NonvolatileInputs(
+                    instruction, Reads(instruction, calleeContracts).Except(mustWritten), calleeContracts));
                 Writes(instruction, calleeContracts, out var possibleInstructionWrites, out var definiteInstructionWrites);
                 possibleWrites = possibleWrites.Union(possibleInstructionWrites);
                 written = written.Union(definiteInstructionWrites);
+                if (instruction is not IrPhi)
+                    mustWritten = mustWritten.Union(definiteInstructionWrites);
                 if (instruction is IrCall call && GuestTargetParser.TryParseAddress(call.Target, out var target))
                 {
                     if (!TryGetInlineThunk(target, out _, out _))
                         directTargets.Add(target);
                     if (calleeContracts?.TryGetValue(target, out var callee) == true)
-                        boundaryFlags |= callee.BoundaryFlags;
+                    {
+                        // An EABI callee's need for the complete context ends at its own boundary.
+                        boundaryFlags |= GuestEabiVisibility.TrustsFencedCall(target)
+                            ? callee.BoundaryFlags & ~GuestCallBoundaryFlags.RequiresCompleteContext
+                            : callee.BoundaryFlags;
+                    }
                 }
                 else if (instruction is IrCall helperCall)
                 {
                     boundaryFlags |= GuestHelperEffectCatalog.Analyze(helperCall).BoundaryFlags;
                 }
-                if (instruction is IrIndirectCall or IrIndirectJump or IrUndefined)
+                if (instruction is IrIndirectCall && GuestEabiVisibility.TrustFences)
+                {
+                    // Whatever the pointer reaches is an EABI function that may do anything.
+                    boundaryFlags |= GuestCallBoundaryFlags.InvokesGuestCode | GuestCallBoundaryFlags.CanSuspend |
+                                     GuestCallBoundaryFlags.CanSwitchThreads;
+                }
+                else if (instruction is IrIndirectCall or IrIndirectJump or IrUndefined)
                 {
                     boundaryFlags |= GuestCallBoundaryFlags.RequiresCompleteContext;
                 }
@@ -223,8 +325,91 @@ public static class GuestAbiContractAnalyzer
             DefinitelyWritesLr = definiteWrites.Lr,
             DefinitelyWritesFpscr = definiteWrites.Fpscr,
             GqrDefiniteWriteMask = definiteWrites.Gqr,
-            HidDefiniteWriteMask = definiteWrites.Hid
+            HidDefiniteWriteMask = definiteWrites.Hid,
+            NonvolatileGprInputMask = nonvolatileInputs.Gpr,
+            NonvolatileFprInputMask = nonvolatileInputs.Fpr
         };
+    }
+
+    private const uint NonvolatileGprMask = 0xFFFFC000u;  // r14-r31
+    private const uint NonvolatileFprMask = 0xFFFFC000u;  // f14-f31
+
+    /// <summary>
+    /// The nonvolatile registers among <paramref name="reads"/> (already restricted to those some
+    /// path has not written yet) whose incoming value this instruction really consumes. Storing one into the frame is
+    /// the prologue saving it; a guest call or a dispatch only passes it on to be saved again, unless
+    /// the direct callee is itself a real consumer.
+    /// </summary>
+    private static RegisterSet NonvolatileInputs(
+        IrInstruction instruction,
+        RegisterSet reads,
+        IReadOnlyDictionary<uint, GuestAbiContract>? calleeContracts)
+    {
+        var gpr = reads.Gpr & NonvolatileGprMask;
+        var fpr = reads.Fpr & NonvolatileFprMask;
+        if (gpr == 0 && fpr == 0)
+            return RegisterSet.Empty;
+        RegisterSet saved;
+        switch (instruction)
+        {
+            case IrCall call when GuestTargetParser.TryParseAddress(call.Target, out var target):
+                return calleeContracts?.TryGetValue(target, out var callee) == true
+                    ? RegisterSet.Empty with
+                    {
+                        Gpr = gpr & callee.NonvolatileGprInputMask,
+                        Fpr = fpr & callee.NonvolatileFprInputMask
+                    }
+                    : RegisterSet.Empty;
+            case IrIndirectCall or IrIndirectJump or IrPhi:
+                return RegisterSet.Empty;
+            case IrCall helper:
+            {
+                // A runtime helper consumes its explicit operands. What its catalog entry hides
+                // (a system call reading the whole context) is not a use of the caller's value.
+                var operands = RegisterSet.Empty;
+                foreach (var argument in helper.Arguments) operands = operands.Union(ValueRegister(argument));
+                if (helper.Target.Equals("PPC_PsqSt", StringComparison.OrdinalIgnoreCase) &&
+                    helper.Arguments.Count >= 2 && helper.Arguments[0].Kind == "register" &&
+                    IsFrameBase(helper.Arguments[0].RegisterName))
+                {
+                    // A paired-single save: psq_st fN, d(r1).
+                    operands = operands.Except(ValueRegister(helper.Arguments[1]));
+                }
+                return RegisterSet.Empty with { Gpr = gpr & operands.Gpr, Fpr = fpr & operands.Fpr };
+            }
+            case IrStore store when IsFrameBase(store.Address.Base):
+                saved = ValueRegister(store.Source);
+                break;
+            case IrResolvedStore store when IsFrameBase(store.OriginalAddress.Base):
+                saved = ValueRegister(store.Source);
+                break;
+            case IrResolvedStorePair pair when IsFrameBase(pair.FirstOriginalAddress.Base):
+                saved = ValueRegister(pair.FirstSource).Union(ValueRegister(pair.SecondSource));
+                break;
+            case IrResolvedPsqStore store when store.OriginalAddress.RegisterName is { } psqBase &&
+                                               IsFrameBase(psqBase):
+                saved = ValueRegister(store.Source);
+                break;
+            default:
+                saved = RegisterSet.Empty;
+                break;
+        }
+        return RegisterSet.Empty with { Gpr = gpr & ~saved.Gpr, Fpr = fpr & ~saved.Fpr };
+    }
+
+    private static RegisterSet ValueRegister(IrValue value) =>
+        value.Kind == "register" ? Register(value.RegisterName) : RegisterSet.Empty;
+
+    /// <summary>The stack pointer, the save-area pointer, or an address the translator derived from them.</summary>
+    private static bool IsFrameBase(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        var baseName = SsaBaseName(name.AsSpan());
+        if (baseName.SequenceEqual("r1") || baseName.SequenceEqual("r11") || baseName.SequenceEqual("r12"))
+            return true;
+        return name.StartsWith("r1_", StringComparison.Ordinal) ||
+               name.StartsWith("r11_", StringComparison.Ordinal) ||
+               name.StartsWith("r12_", StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -292,7 +477,10 @@ public static class GuestAbiContractAnalyzer
                 {
                     // A decoded call carries the volatile ABI registers as generic IR arguments;
                     // once the callee has a contract, only state it actually consumes is a real read.
-                    result = result.Union(ContractReads(callee));
+                    result = result.Union(
+                        callee.HasFullSynchronizationFence && GuestEabiVisibility.TrustsFencedCall(directTarget)
+                            ? EabiCallReads
+                            : ContractReads(callee));
                 }
                 else if (GuestTargetParser.TryParseAddress(value.Target, out var readThunkAddress) &&
                     TryGetInlineThunk(readThunkAddress, out var readThunk, out var readStart) &&
@@ -316,7 +504,7 @@ public static class GuestAbiContractAnalyzer
             case IrIndirectCall value:
                 AddValue(ref result, value.Target);
                 foreach (var argument in value.Arguments) AddValue(ref result, argument);
-                result = result.Union(FullState);
+                result = result.Union(GuestEabiVisibility.TrustFences ? EabiCallReads : FullState);
                 break;
             case IrIndirectJump value:
                 AddValue(ref result, value.Target);
@@ -377,8 +565,16 @@ public static class GuestAbiContractAnalyzer
                 if (GuestTargetParser.TryParseAddress(value.Target, out var directTarget) &&
                     calleeContracts?.TryGetValue(directTarget, out var callee) == true)
                 {
-                    possibleOnly = ContractWrites(callee);
-                    definiteOnly = ContractDefiniteWrites(callee);
+                    if (callee.HasFullSynchronizationFence && GuestEabiVisibility.TrustsFencedCall(directTarget))
+                    {
+                        possibleOnly = EabiCallWrites;
+                        definiteOnly = EabiCallClobbers;
+                    }
+                    else
+                    {
+                        possibleOnly = ContractWrites(callee);
+                        definiteOnly = ContractDefiniteWrites(callee);
+                    }
                 }
                 else if (GuestTargetParser.TryParseAddress(value.Target, out var writeThunkAddress) &&
                     TryGetInlineThunk(writeThunkAddress, out var writeThunk, out var writeStart) &&
@@ -395,7 +591,15 @@ public static class GuestAbiContractAnalyzer
                 break;
             case IrIndirectCall value:
                 Add(ref shared, value.Destination);
-                shared = shared.Union(FullState);
+                if (GuestEabiVisibility.TrustFences)
+                {
+                    possibleOnly = EabiCallWrites;
+                    definiteOnly = EabiCallClobbers;
+                }
+                else
+                {
+                    shared = shared.Union(FullState);
+                }
                 break;
             case IrSetCrField value:
                 shared = shared with { Cr = (byte)(shared.Cr | (1 << value.FieldIndex)) };
@@ -467,6 +671,23 @@ public static class GuestAbiContractAnalyzer
 
     private static RegisterSet FullState =>
         new(uint.MaxValue, uint.MaxValue, byte.MaxValue, true, true, true, true, byte.MaxValue, byte.MaxValue);
+
+    // An EABI call as seen from the caller (GuestEabiVisibility.TrustFences): it consumes the
+    // arguments and every nonvolatile plus the global FP/quantization state, may change the volatile
+    // registers and that global state, and leaves the nonvolatiles as they were.
+    private static RegisterSet EabiCallReads =>
+        new(GuestEabiVisibility.CallReadGpr, GuestEabiVisibility.CallReadFpr, byte.MaxValue,
+            false, false, false, true, byte.MaxValue, byte.MaxValue);
+
+    private static RegisterSet EabiCallWrites =>
+        new(GuestEabiVisibility.CallWriteGpr, GuestEabiVisibility.CallWriteFpr, GuestEabiVisibility.CallWriteCr,
+            true, true, true, true, byte.MaxValue, byte.MaxValue);
+
+    // The volatile registers hold nothing a caller may read after the call, so they count as
+    // written; the global state only possibly changes.
+    private static RegisterSet EabiCallClobbers =>
+        new(GuestEabiVisibility.CallWriteGpr, GuestEabiVisibility.CallWriteFpr, GuestEabiVisibility.CallWriteCr,
+            true, true, true, false, 0, 0);
 
     private static RegisterSet Register(string? name)
     {

@@ -91,7 +91,7 @@ static void tex_quarantine_reap(u32 cur_frame, int force_all)
     while (i < s_tex_quarantine_n) {
         if ((s32)(done - s_tex_quarantine[i].need) >= 0) {
             if (s_tex_quarantine[i].ptr)
-                rsxFree(s_tex_quarantine[i].ptr);
+                rsx_release_block(s_tex_quarantine[i].ptr);
             s_tex_quarantine[i] = s_tex_quarantine[--s_tex_quarantine_n];
         } else {
             i++;
@@ -3053,6 +3053,8 @@ static struct {
     u32 nidx;
 } s_run;
 u64 g_run_draws, g_run_prims, g_run_splits, g_run_fallbacks, g_run_calls, g_run_singly;
+u64 g_split_skinned, g_split_tm_pn30, g_split_tm_eq;
+u32 g_split_last_pn, g_split_last_tm;
 
 /* The matrix-index bytes that lead the first vertex (PNMTXIDX, TEX0..7MTXIDX,
  * one byte each in that order). The per-draw constants are chosen from them,
@@ -4254,6 +4256,17 @@ static void on_draw_run(void *ctx, const GXState *g, unsigned vat, u32 cmd_addr,
                 if (mem_read8(cmd_addr + pos + 3u + skip + k) != key[k]) { same = 0; break; }
         if (!same) {
             g_run_splits++;
+            if (skip) {
+                /* Skinned: how the first texture-matrix index relates to the
+                 * position-matrix index of the vertex that changed it. */
+                u8 pn = mem_read8(cmd_addr + pos + 3u);
+                u8 tm = mem_read8(cmd_addr + pos + 3u + skip);
+                g_split_skinned++;
+                if (tm == (u8)(pn + 30u)) g_split_tm_pn30++;
+                else if (tm == pn) g_split_tm_eq++;
+                g_split_last_pn = pn;
+                g_split_last_tm = tm;
+            }
             run_issue(ctx, g, vat, cmd_addr + seg_pos, pos - seg_pos, seg_prims,
                       seg_verts, seg_nidx, vsize);
             for (k = 0; k < keyn; k++)

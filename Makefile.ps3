@@ -10,6 +10,8 @@ PPU_BIN := $(PS3DEV)/ppu/bin
 CXX     := $(PPU_BIN)/powerpc64-ps3-elf-g++
 CC      := $(PPU_BIN)/powerpc64-ps3-elf-gcc
 STRIP   := $(PPU_BIN)/powerpc64-ps3-elf-strip
+NM      := $(PPU_BIN)/powerpc64-ps3-elf-nm
+OBJDUMP := $(PPU_BIN)/powerpc64-ps3-elf-objdump
 REPO    ?= /repo
 WS      ?= /ws
 OUT     ?= $(WS)/build/ps3
@@ -153,8 +155,15 @@ $(BLOB_OBJ): $(OUT)/data_sections_blobs.S
 
 $(TARGET): $(ALL_OBJS)
 	@echo "  LD   $(notdir $@)"
-	@$(CXX) $(ARCH) -Wl,--gc-sections -Wl,--wrap=exit -Wl,--wrap=abort \
+	@$(CXX) $(ARCH) -Wl,--gc-sections -Wl,--no-ld-generated-unwind-info -Wl,--wrap=exit -Wl,--wrap=abort \
 	    $(addprefix -Wl$(comma)--wrap=,printf vprintf fprintf vfprintf puts putchar fputs fputc fwrite fflush rename fsync) $(ALL_OBJS) $(LIBS) -o $@
+	@# crtbegin registers .eh_frame from __EH_FRAME_BEGIN__ and skips it when the
+	@# first word there is zero. ld's unwind info for its long-branch stubs once
+	@# left the symbol 4 bytes into a CIE, and every C++ throw then hung.
+	@a=$$($(NM) $@ | sed -n 's/^\([0-9a-f]*\) r __EH_FRAME_BEGIN__$$/\1/p'); \
+	 w=$$($(OBJDUMP) -s -j .eh_frame --start-address=0x$$a --stop-address=$$(printf '0x%x' $$((0x$$a + 4))) $@ | tail -1 | awk '{print $$2}'); \
+	 if [ -z "$$w" ] || [ "$$w" = "00000000" ]; then \
+	     echo "  .eh_frame does not start at __EH_FRAME_BEGIN__: exceptions would be unregistered"; rm -f $@; exit 1; fi
 
 # sprxlinker fixes up the lv2 library import stubs. The XMB launches a fake
 # NPDRM SELF (`fself -n`); the relaunch path spawns a plain one (RELOAD.SELF),

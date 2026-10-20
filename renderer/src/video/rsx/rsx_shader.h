@@ -62,6 +62,8 @@ void rsx_bind_programs(const RsxVertProgram *vp, const RsxFragProgram *fp);
 /* Upload vertex-program constants (4 floats per row, `rows` rows starting at
  * `base`). Matrices live here. */
 void rsx_vp_constants(u32 base, u32 rows, const f32 *values);
+/* Free an RSX block once the GPU is done with it (pool slot or heap). */
+void rsx_release_block(void *ptr);
 
 #if defined(__ALTIVEC__) && defined(__PS3__)
 #include <altivec.h>

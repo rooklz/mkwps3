@@ -141,6 +141,9 @@ public sealed partial class CxxLinearCodeGenerator
             ? GuestEabiVisibility.Apply(contractAddress,
                 GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts))
             : GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts);
+        // r14-r31/f14-f31 stay inside this body (GuestEabiVisibility.LocalizeNonvolatile).
+        var localizesNonvolatile = MarkAddressOf(func) is { } localAddress &&
+                                   GuestEabiVisibility.Localizes(localAddress, guestAbiContract);
         var cfg = IrCfg.Build(func);
         // Condition-flag elision is planned once against the final IR so every
         // emission of this body (recording pass, public entry, state-free
@@ -327,7 +330,10 @@ public sealed partial class CxxLinearCodeGenerator
                 if (residency is not null)
                 {
                     var beforeEntryLoads = body.Length;
-                    residency.AppendEntryLoads(body);
+                    if (localizesNonvolatile)
+                        residency.AppendEntryLoads(body, GuestEabiVisibility.LocalGpr, GuestEabiVisibility.LocalFpr);
+                    else
+                        residency.AppendEntryLoads(body);
                     if (body.Length != beforeEntryLoads)
                     {
                         body.AppendLine();
@@ -429,7 +435,17 @@ public sealed partial class CxxLinearCodeGenerator
                             // Only what a caller can observe under the EABI goes back to
                             // CpuContext (GuestEabiVisibility); exempt bodies publish everything.
                             if (_markAddress is { } exitAddress && GuestEabiVisibility.Applies(exitAddress))
-                                AppendFlush(body, "    ", ResidencyBoundarySync.EabiReturn);
+                            {
+                                var writesNonvolatileCr =
+                                    (guestAbiContract.CrPossibleWriteMask & GuestEabiVisibility.VisibleCr) != 0;
+                                AppendFlush(body, "    ", localizesNonvolatile
+                                    ? writesNonvolatileCr
+                                        ? ResidencyBoundarySync.EabiReturnLocal
+                                        : ResidencyBoundarySync.EabiReturnLocalNoCr
+                                    : writesNonvolatileCr
+                                        ? ResidencyBoundarySync.EabiReturn
+                                        : ResidencyBoundarySync.EabiReturnNoCr);
+                            }
                             else
                                 AppendFlush(body, "    ");
                             body.AppendLine("    return;");

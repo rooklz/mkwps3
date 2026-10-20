@@ -487,36 +487,22 @@ public sealed partial class CxxLinearCodeGenerator
                     ArgumentOrder: argumentOrder));
         }
 
-        static void AddRoundedBinary(
-            Dictionary<string, ScalarInlineSpec> destination,
-            string target,
-            string noNiTarget,
-            string @operator)
-        {
-            destination.Add(
-                target,
-                new ScalarInlineSpec(
-                    ScalarInlineKind.RoundedBinary,
-                    Helper: null,
-                    Operator: @operator,
-                    NoNiVariant: false,
-                    ArgumentOrder: new[] { 0, 1 }));
-            destination.Add(
-                noNiTarget,
-                new ScalarInlineSpec(
-                    ScalarInlineKind.RoundedBinary,
-                    Helper: null,
-                    Operator: @operator,
-                    NoNiVariant: true,
-                    ArgumentOrder: new[] { 0, 1 }));
-        }
 
-        AddRoundedBinary(specs, "PPC_FADDS", "PPC_FADDSNONI", "+");
-        AddRoundedBinary(specs, "PPC_FSUBS", "PPC_FSUBSNONI", "-");
+        // Single-precision arithmetic goes through helpers rather than an
+        // inline "double op, then round": a host whose FPU has the guest's own
+        // single-precision instructions (the PS3's PPE) implements each as one.
+        AddHelperNoNi(
+            specs, "PPC_FADDS", "PPC_FADDSNONI",
+            "PpcFaddsInline", "PpcFaddsNoNiInline", 0, 1);
+        AddHelperNoNi(
+            specs, "PPC_FSUBS", "PPC_FSUBSNONI",
+            "PpcFsubsInline", "PpcFsubsNoNiInline", 0, 1);
         AddHelperNoNi(
             specs, "PPC_FMULS", "PPC_FMULSNONI",
             "PpcFmulsInline", "PpcFmulsNoNiInline", 0, 1);
-        AddRoundedBinary(specs, "PPC_FDIVS", "PPC_FDIVSNONI", "/");
+        AddHelperNoNi(
+            specs, "PPC_FDIVS", "PPC_FDIVSNONI",
+            "PpcFdivsInline", "PpcFdivsNoNiInline", 0, 1);
 
         AddHelper(specs, "PPC_FSQRT", "std::sqrt", 0);
         AddHelper(specs, "PPC_FMADD", "PpcFmaddInline", 0, 1, 2);

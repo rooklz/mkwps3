@@ -170,15 +170,21 @@ MKW_MEMORY_FORCE_INLINE uint8_t* ResolveRangeHost(uint32_t base, int32_t minOffs
                                                  bool needsRead, bool needsWrite)
 {
     (void)needsRead;
-    const uint32_t guestStart = base + static_cast<uint32_t>(minOffset);
-    if (length == 0 || length > kPageSize || guestStart > UINT32_MAX - (length - 1))
-        return nullptr;
-    if (needsWrite &&
-        (FlatWriteNeedsPolicy(guestStart) || FlatWriteNeedsPolicy(guestStart + (length - 1))))
-        return nullptr;
-    if (!GuestFlat::RangeBacked(guestStart, length))
-        return nullptr;
-    return GuestHost(guestStart);
+    (void)needsWrite;
+    // The common case in two compares: the whole range inside MEM1 or MEM2.
+    // `length` is a constant at every call site. No separate MMIO test is
+    // needed: the register blocks fold to 0x0C000000/0x0D000000, outside both
+    // regions, so a range touching them falls through to the checked path.
+    const uint32_t fold = (base + static_cast<uint32_t>(minOffset)) & GuestFlat::kFoldMask;
+    if (length != 0 && length <= kPageSize &&
+        (fold + length <= GuestFlat::kMem1Bytes ||
+         fold - GuestFlat::kMem2FoldBase + length <= GuestFlat::kMem2Bytes)) {
+        uint8_t* const p = g_mkwGuestArena + fold;
+        if (!p)
+            __builtin_unreachable();
+        return p;
+    }
+    return nullptr;
 }
 
 template <typename T>

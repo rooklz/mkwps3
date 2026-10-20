@@ -328,11 +328,11 @@ public:
     static void Register(TranslatedFunctionInfo info);
     static void Finalize();
     static inline bool IsLookupPublished() noexcept {
-        return lookupPublished_.load(std::memory_order_acquire);
+        return lookupPublished_.load(std::memory_order_relaxed);
     }
     static std::optional<TranslatedFunctionInfo> FindNearestByAddress(uint32_t address);
     static inline const TranslatedFunctionInfo* FindByAddressPtr(uint32_t address) {
-        if (!lookupPublished_.load(std::memory_order_acquire)) {
+        if (!lookupPublished_.load(std::memory_order_relaxed)) {
             return FindByAddressPtrSlow(address);
         }
 
@@ -352,7 +352,7 @@ public:
     // the inliner's budget and out-of-lined the probe itself, which is the part
     // every bctrl executes.
     static MKW_PPC_FORCE_INLINE const RawDispatchRecord* FindRawByAddressPtr(uint32_t address) {
-        if (!lookupPublished_.load(std::memory_order_acquire)) {
+        if (!lookupPublished_.load(std::memory_order_relaxed)) {
             return nullptr;
         }
 
@@ -391,6 +391,9 @@ private:
     // Finalize publishes immutable registry, generated-table, and dynamic raw
     // dispatch storage. Header-inlined cache hits are enabled only after that
     // release publication, so a pre-finalization miss can never poison them.
+    // The hot loads are relaxed: Finalize runs in main before any guest thread
+    // is created, and thread creation orders everything it wrote, so an
+    // acquire here only bought an isync on every indirect call.
     inline static std::atomic_bool lookupPublished_{false};
 };
 
@@ -501,7 +504,11 @@ inline const TranslatedFunctionInfo* ResolveDirectCpuTargetInfoCached() {
     // 1 = negative-cache sentinel, avoiding a second ready flag on the hot path.
     static std::atomic<uintptr_t> cachedValue{0};
     constexpr uintptr_t kNegativeCache = 1;
-    const uintptr_t cached = cachedValue.load(std::memory_order_acquire);
+    // Relaxed, not acquire: on PowerPC an acquire load is lbz/cmp/bne/isync,
+    // and isync drains the pipeline -- on the hottest path in translated
+    // code. Reads through the cached pointer are ordered by their address
+    // dependency, and the registry is immutable once published.
+    const uintptr_t cached = cachedValue.load(std::memory_order_relaxed);
     if (cached != 0) {
         return cached == kNegativeCache
             ? nullptr
@@ -526,7 +533,9 @@ inline bool IsBaseTranslatedCpuTargetActive() {
     static std::atomic<uint8_t> cachedVerdict{0};
     constexpr uint8_t kNegativeVerdict = 1;
     constexpr uint8_t kPositiveVerdict = 2;
-    const uint8_t cached = cachedVerdict.load(std::memory_order_acquire);
+    // Relaxed for the same reason as ResolveDirectCpuTargetInfoCached: the
+    // verdict is self-contained, and this guards every state-free call.
+    const uint8_t cached = cachedVerdict.load(std::memory_order_relaxed);
     if (cached != 0) {
         return cached == kPositiveVerdict;
     }

@@ -249,6 +249,16 @@ int mkw_renderer_stats(char *out, unsigned cap)
         out += m; cap -= (unsigned)m; n += m;
     }
     {
+        extern u64 g_split_skinned, g_split_tm_pn30, g_split_tm_eq;
+        extern u32 g_split_last_pn, g_split_last_tm;
+        int m = snprintf(out, cap, "splits skinned=%llu tm=pn+30:%llu tm=pn:%llu last pn=%u tm=%u\n",
+                         (unsigned long long)g_split_skinned, (unsigned long long)g_split_tm_pn30,
+                         (unsigned long long)g_split_tm_eq, g_split_last_pn, g_split_last_tm);
+        if (m < 0 || (unsigned)m >= cap)
+            return n;
+        out += m; cap -= (unsigned)m; n += m;
+    }
+    {
         extern int rsx_debug_state(char *out, unsigned cap);
         extern const char *volatile g_rsx_init_step;
         int m = snprintf(out, cap, "rsx init: %s\n", g_rsx_init_step);

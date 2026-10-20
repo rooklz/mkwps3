@@ -40,8 +40,8 @@ public static class GuestAbiInterproceduralAnalyzer
             0,
             addresses.Length,
             parallelOptions,
-            index => current[index] = GuestEabiVisibility.Apply(
-                addresses[index], GuestAbiContractAnalyzer.Analyze(bodies[index])));
+            index => current[index] = NativeAware(addresses[index], GuestEabiVisibility.Apply(
+                addresses[index], GuestAbiContractAnalyzer.Analyze(bodies[index]))));
 
         var contracts = new Dictionary<uint, GuestAbiContract>(addresses.Length);
         for (var index = 0; index < addresses.Length; ++index) contracts.Add(addresses[index], current[index]);
@@ -96,8 +96,8 @@ public static class GuestAbiInterproceduralAnalyzer
             Parallel.For(0, worklistCount, parallelOptions, position =>
             {
                 var ordinal = worklist[position];
-                var next = GuestEabiVisibility.Apply(
-                    addresses[ordinal], GuestAbiContractAnalyzer.Analyze(bodies[ordinal], visible));
+                var next = NativeAware(addresses[ordinal], GuestEabiVisibility.Apply(
+                    addresses[ordinal], GuestAbiContractAnalyzer.Analyze(bodies[ordinal], visible)));
                 roundResults[position] = Equivalent(current[ordinal], next) ? null : next;
             });
 
@@ -124,6 +124,14 @@ public static class GuestAbiInterproceduralAnalyzer
         }
 
         return new GuestAbiInterproceduralResult(contracts, BuildComponents(functions, contracts));
+
+        // A body a native override replaces never runs, so what it would read of the caller's
+        // nonvolatiles (the guest scheduler saving a thread's registers) says nothing about the
+        // call: the HLE switches threads without them.
+        GuestAbiContract NativeAware(uint address, GuestAbiContract contract) =>
+            externalContracts.ContainsKey(address)
+                ? contract with { NonvolatileGprInputMask = 0, NonvolatileFprInputMask = 0 }
+                : contract;
     }
 
     /// <summary>
@@ -180,6 +188,8 @@ public static class GuestAbiInterproceduralAnalyzer
         left.DefinitelyWritesFpscr == right.DefinitelyWritesFpscr &&
         left.GqrDefiniteWriteMask == right.GqrDefiniteWriteMask &&
         left.HidDefiniteWriteMask == right.HidDefiniteWriteMask &&
+        left.NonvolatileGprInputMask == right.NonvolatileGprInputMask &&
+        left.NonvolatileFprInputMask == right.NonvolatileFprInputMask &&
         left.BoundaryFlags == right.BoundaryFlags &&
         SameTargets(left.DirectCallTargets, right.DirectCallTargets);
 

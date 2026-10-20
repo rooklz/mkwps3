@@ -345,6 +345,46 @@ inline bool PpcAllSingle3(double a, double c, double b)
     return PpcIsSingleInline(a) & PpcIsSingleInline(c) & PpcIsSingleInline(b);
 }
 
+// ---- native single precision -------------------------------------------
+// The PPE has Gekko's single-precision instructions, and the guest's FPSCR[NI]
+// is mirrored into the host FPSCR (ppc_isa_fpenv.h), so each guest op is one
+// host instruction with the same rounding and denormal flushing. Expressed in
+// C ("(float)(a * b)") they cost a round of every input and of the result,
+// and fmuls/fmadds took an "is this already single?" FP compare and branch --
+// the slowest thing an in-order FPU can be asked to do. The one difference
+// left is Gekko's 25-bit rounding of a C operand that is not single at all,
+// which game code produces only from double-precision results.
+#if defined(__PPU__) || defined(__powerpc64__) || defined(__powerpc__)
+#define MKW_PPC_NATIVE_SINGLE 1
+#define MKW_FOP2(name, insn)                                                        \
+    inline double name(double a, double b)                                          \
+    {                                                                               \
+        double r;                                                                   \
+        __asm__(insn " %0,%1,%2" : "=f"(r) : "f"(a), "f"(b));                       \
+        return r;                                                                   \
+    }
+#define MKW_FOP3(name, insn)                                                        \
+    inline double name(double a, double c, double b)                                \
+    {                                                                               \
+        double r;                                                                   \
+        __asm__(insn " %0,%1,%2,%3" : "=f"(r) : "f"(a), "f"(c), "f"(b));            \
+        return r;                                                                   \
+    }
+MKW_FOP2(PpcFaddsInline, "fadds")
+MKW_FOP2(PpcFsubsInline, "fsubs")
+MKW_FOP2(PpcFmulsInline, "fmuls")
+MKW_FOP2(PpcFdivsInline, "fdivs")
+MKW_FOP3(PpcNativeFmadds, "fmadds")
+MKW_FOP3(PpcNativeFmsubs, "fmsubs")
+MKW_FOP3(PpcNativeFnmadds, "fnmadds")
+MKW_FOP3(PpcNativeFnmsubs, "fnmsubs")
+#undef MKW_FOP2
+#undef MKW_FOP3
+inline double PpcFaddsNoNiInline(double a, double b) { return PpcFaddsInline(a, b); }
+inline double PpcFsubsNoNiInline(double a, double b) { return PpcFsubsInline(a, b); }
+inline double PpcFmulsNoNiInline(double a, double c) { return PpcFmulsInline(a, c); }
+inline double PpcFdivsNoNiInline(double a, double b) { return PpcFdivsInline(a, b); }
+#else
 inline double PpcFmulsInline(double a, double c)
 {
     return static_cast<double>(PpcForceSingleValueInline(a * PpcForce25BitInline(c)));
@@ -354,6 +394,13 @@ inline double PpcFmulsNoNiInline(double a, double c)
 {
     return static_cast<double>(static_cast<float>(a * PpcForce25BitInline(c)));
 }
+inline double PpcFaddsInline(double a, double b) { return static_cast<double>(PpcForceSingleValueInline(a + b)); }
+inline double PpcFsubsInline(double a, double b) { return static_cast<double>(PpcForceSingleValueInline(a - b)); }
+inline double PpcFdivsInline(double a, double b) { return static_cast<double>(PpcForceSingleValueInline(a / b)); }
+inline double PpcFaddsNoNiInline(double a, double b) { return static_cast<double>(static_cast<float>(a + b)); }
+inline double PpcFsubsNoNiInline(double a, double b) { return static_cast<double>(static_cast<float>(a - b)); }
+inline double PpcFdivsNoNiInline(double a, double b) { return static_cast<double>(static_cast<float>(a / b)); }
+#endif
 
 inline double PpcFmaddInline(double a, double c, double b) { return __builtin_fma(a, c, b); }
 inline double PpcFmsubInline(double a, double c, double b) { return __builtin_fma(a, c, -b); }
@@ -372,6 +419,9 @@ inline double PpcFnmsubInline(double a, double c, double b)
 
 inline double PpcFmaddsInline(double a, double c, double b)
 {
+#if defined(MKW_PPC_NATIVE_SINGLE)
+    return PpcNativeFmadds(a, c, b);
+#endif
     if (PpcAllSingle3(a, c, b))
         return static_cast<double>(PpcFmadd32(static_cast<float>(a), static_cast<float>(c),
                                               static_cast<float>(b)));
@@ -381,6 +431,9 @@ inline double PpcFmaddsInline(double a, double c, double b)
 
 inline double PpcFmsubsInline(double a, double c, double b)
 {
+#if defined(MKW_PPC_NATIVE_SINGLE)
+    return PpcNativeFmsubs(a, c, b);
+#endif
     if (PpcAllSingle3(a, c, b))
         return static_cast<double>(PpcFmadd32(static_cast<float>(a), static_cast<float>(c),
                                               -static_cast<float>(b)));
@@ -390,12 +443,18 @@ inline double PpcFmsubsInline(double a, double c, double b)
 
 inline double PpcFnmaddsInline(double a, double c, double b)
 {
+#if defined(MKW_PPC_NATIVE_SINGLE)
+    return PpcNativeFnmadds(a, c, b);
+#endif
     const float result = static_cast<float>(PpcFmaddsInline(a, c, b));
     return static_cast<double>(std::isnan(result) ? result : -result);
 }
 
 inline double PpcFnmsubsInline(double a, double c, double b)
 {
+#if defined(MKW_PPC_NATIVE_SINGLE)
+    return PpcNativeFnmsubs(a, c, b);
+#endif
     const float result = static_cast<float>(PpcFmsubsInline(a, c, b));
     return static_cast<double>(std::isnan(result) ? result : -result);
 }
@@ -408,6 +467,40 @@ inline double PpcFnmsubsInline(double a, double c, double b)
 #define MKW_PS_LANES(expr0, expr1) FprVal(static_cast<double>(expr0), static_cast<double>(expr1))
 #define MKW_F(x) static_cast<float>(x)
 
+#if defined(MKW_PPC_NATIVE_SINGLE)
+// One native single-precision instruction per lane; a lane already holds a
+// single, so nothing needs rounding on the way in.
+inline FprVal PPC_PsMulInline(FprVal a, FprVal b)
+{ return FprVal(PpcFmulsInline(a.ps0, b.ps0), PpcFmulsInline(a.ps1, b.ps1)); }
+inline FprVal PPC_PsAddInline(FprVal a, FprVal b)
+{ return FprVal(PpcFaddsInline(a.ps0, b.ps0), PpcFaddsInline(a.ps1, b.ps1)); }
+inline FprVal PPC_PsSubInline(FprVal a, FprVal b)
+{ return FprVal(PpcFsubsInline(a.ps0, b.ps0), PpcFsubsInline(a.ps1, b.ps1)); }
+inline FprVal PPC_PsDivInline(FprVal a, FprVal b)
+{ return FprVal(PpcFdivsInline(a.ps0, b.ps0), PpcFdivsInline(a.ps1, b.ps1)); }
+inline FprVal PPC_PsMaddInline(FprVal a, FprVal c, FprVal b)
+{ return FprVal(PpcNativeFmadds(a.ps0, c.ps0, b.ps0), PpcNativeFmadds(a.ps1, c.ps1, b.ps1)); }
+inline FprVal PPC_PsMsubInline(FprVal a, FprVal c, FprVal b)
+{ return FprVal(PpcNativeFmsubs(a.ps0, c.ps0, b.ps0), PpcNativeFmsubs(a.ps1, c.ps1, b.ps1)); }
+inline FprVal PPC_PsMadds0Inline(FprVal a, FprVal c, FprVal b)
+{ return FprVal(PpcNativeFmadds(a.ps0, c.ps0, b.ps0), PpcNativeFmadds(a.ps1, c.ps0, b.ps1)); }
+inline FprVal PPC_PsMadds1Inline(FprVal a, FprVal c, FprVal b)
+{ return FprVal(PpcNativeFmadds(a.ps0, c.ps1, b.ps0), PpcNativeFmadds(a.ps1, c.ps1, b.ps1)); }
+inline FprVal PPC_PsNmaddInline(FprVal a, FprVal c, FprVal b)
+{ return FprVal(PpcNativeFnmadds(a.ps0, c.ps0, b.ps0), PpcNativeFnmadds(a.ps1, c.ps1, b.ps1)); }
+inline FprVal PPC_PsNmsubInline(FprVal a, FprVal c, FprVal b)
+{ return FprVal(PpcNativeFnmsubs(a.ps0, c.ps0, b.ps0), PpcNativeFnmsubs(a.ps1, c.ps1, b.ps1)); }
+inline FprVal PPC_PsMuls0Inline(FprVal a, FprVal c)
+{ return FprVal(PpcFmulsInline(a.ps0, c.ps0), PpcFmulsInline(a.ps1, c.ps0)); }
+inline FprVal PPC_PsMuls1Inline(FprVal a, FprVal c)
+{ return FprVal(PpcFmulsInline(a.ps0, c.ps1), PpcFmulsInline(a.ps1, c.ps1)); }
+inline FprVal PPC_PsMulNoNiInline(FprVal a, FprVal b) { return PPC_PsMulInline(a, b); }
+inline FprVal PPC_PsAddNoNiInline(FprVal a, FprVal b) { return PPC_PsAddInline(a, b); }
+inline FprVal PPC_PsSubNoNiInline(FprVal a, FprVal b) { return PPC_PsSubInline(a, b); }
+inline FprVal PPC_PsMaddNoNiInline(FprVal a, FprVal c, FprVal b) { return PPC_PsMaddInline(a, c, b); }
+inline FprVal PPC_PsMsubNoNiInline(FprVal a, FprVal c, FprVal b) { return PPC_PsMsubInline(a, c, b); }
+inline FprVal PPC_PsNmsubNoNiInline(FprVal a, FprVal c, FprVal b) { return PPC_PsNmsubInline(a, c, b); }
+#else
 inline FprVal PPC_PsMulInline(FprVal a, FprVal b)
 {
     return MKW_PS_LANES(MKW_F(a.ps0) * MKW_F(b.ps0), MKW_F(a.ps1) * MKW_F(b.ps1));
@@ -482,6 +575,8 @@ inline FprVal PPC_PsMuls1Inline(FprVal a, FprVal c)
     return MKW_PS_LANES(MKW_F(a.ps0) * MKW_F(c.ps1), MKW_F(a.ps1) * MKW_F(c.ps1));
 }
 
+#endif
+
 inline PPC_FPR PpcMakePairedResultInline(float ps0, float ps1)
 {
     PPC_FPR result;
@@ -522,14 +617,22 @@ inline FprVal PPC_PsAbsInline(FprVal value) { return FprVal(std::fabs(value.ps0)
 
 inline FprVal PPC_PsSum0Inline(FprVal a, FprVal b, FprVal c)
 {
+#if defined(MKW_PPC_NATIVE_SINGLE)
+    return FprVal(PpcFaddsInline(a.ps0, b.ps1), c.ps1);
+#else
     return MKW_PS_LANES(PpcForceSingleValueInline(a.ps0 + b.ps1),
                         PpcFlushSingleForNiInline(MKW_F(c.ps1)));
+#endif
 }
 
 inline FprVal PPC_PsSum1Inline(FprVal a, FprVal b, FprVal c)
 {
+#if defined(MKW_PPC_NATIVE_SINGLE)
+    return FprVal(c.ps0, PpcFaddsInline(a.ps0, b.ps1));
+#else
     return MKW_PS_LANES(PpcFlushSingleForNiInline(MKW_F(c.ps0)),
                         PpcForceSingleValueInline(a.ps0 + b.ps1));
+#endif
 }
 
 #undef MKW_F
@@ -642,10 +745,10 @@ extern "C" inline double PPC_Fmadd(double a, double c, double b) { return PpcFma
 extern "C" inline double PPC_Fmsub(double a, double c, double b) { return PpcFmsubInline(a, c, b); }
 extern "C" inline double PPC_Fnmadd(double a, double c, double b) { return PpcFnmaddInline(a, c, b); }
 extern "C" inline double PPC_Fnmsub(double a, double c, double b) { return PpcFnmsubInline(a, c, b); }
-extern "C" inline double PPC_Fadds(double a, double b) { return static_cast<double>(PpcForceSingleValueInline(a + b)); }
-extern "C" inline double PPC_Fsubs(double a, double b) { return static_cast<double>(PpcForceSingleValueInline(a - b)); }
+extern "C" inline double PPC_Fadds(double a, double b) { return PpcFaddsInline(a, b); }
+extern "C" inline double PPC_Fsubs(double a, double b) { return PpcFsubsInline(a, b); }
 extern "C" inline double PPC_Fmuls(double a, double b) { return PpcFmulsInline(a, b); }
-extern "C" inline double PPC_Fdivs(double a, double b) { return static_cast<double>(PpcForceSingleValueInline(a / b)); }
+extern "C" inline double PPC_Fdivs(double a, double b) { return PpcFdivsInline(a, b); }
 extern "C" inline double PPC_Fmadds(double a, double c, double b) { return PpcFmaddsInline(a, c, b); }
 extern "C" inline double PPC_Fmsubs(double a, double c, double b) { return PpcFmsubsInline(a, c, b); }
 extern "C" inline double PPC_Fnmadds(double a, double c, double b) { return PpcFnmaddsInline(a, c, b); }

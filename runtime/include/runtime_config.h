@@ -422,7 +422,10 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
 
 inline RuntimeUserConfig ParseConfig(std::istream& input, std::string sourceName = "Config.toml") {
     try {
-        return ParseConfigDocument(toml::parse(input, std::move(sourceName)));
+        MkwConfigCrumb("config: toml");
+        auto document = toml::parse(input, std::move(sourceName));
+        MkwConfigCrumb("config: document");
+        return ParseConfigDocument(document);
     } catch (const std::exception& exception) {
         std::cerr << "[runtime-config] Invalid TOML; using built-in defaults: "
                   << exception.what() << std::endl;

@@ -29,9 +29,16 @@ inline thread_local uint32_t g_currentTranslatedExecutionAddress = 0;
 // after each call it makes returns -- so a sampler on another thread sees
 // exactly where the guest is. One store to a thread-local each.
 #define MKW_FN_MARK(address) (::RecompMod::g_currentTranslatedExecutionAddress = (address))
-// Function entries, counted for the control port's stats (calls per frame).
+// Function entries, counted for the control port's stats (calls per frame)
+// when built with MKW_COUNT_CALLS. Off by default: the increment is a load
+// and a store of the same word on every entry, a load-hit-store on the PPE
+// whenever two entries come close together.
 inline thread_local uint32_t g_translatedEntries = 0;
+#if defined(MKW_COUNT_CALLS) && MKW_COUNT_CALLS
 #define MKW_FN_ENTER(address) (MKW_FN_MARK(address), ++::RecompMod::g_translatedEntries)
+#else
+#define MKW_FN_ENTER(address) MKW_FN_MARK(address)
+#endif
 
 class ScopedTranslatedExecutionAddress {
 public:

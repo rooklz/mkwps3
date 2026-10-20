@@ -20,6 +20,7 @@
 #include "../../common/log.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <rsx/rsx.h>
 
 extern gcmContextData *rsx_context(void);
@@ -30,6 +31,100 @@ extern gcmContextData *rsx_context(void);
 static u32 s_program_serial;
 void (*g_rsx_fp_release)(void *ucode);
 
+/* Fragment-program storage.
+ *
+ * Every program built went through rsxMemalign and every eviction through
+ * rsxFree, into the same heap as every texture. After a few minutes of play
+ * that heap is a long, fragmented list and an allocation walked it: measured
+ * at over 500 us per program in a race, several programs a frame. Programs
+ * are small (at most FP_WORDS_MAX words, 8 KiB) and fall in a few sizes, so
+ * they get their own region in five size classes, each a zone of fixed slots
+ * with a free list kept in host memory -- the PPE reads RSX local memory very
+ * slowly, so nothing about the pool lives in it. A slot is released through
+ * the same frame-fence quarantine as before (rsx_release_block). */
+#define FPP_CLASSES 5
+static const u32 k_fpp_slot[FPP_CLASSES]  = {512u, 1024u, 2048u, 4096u, 8192u};
+static const u32 k_fpp_slots[FPP_CLASSES] = {4096u, 4096u, 2048u, 1024u, 256u};
+static u8   *s_fpp_base;                 /* the whole region */
+static u8   *s_fpp_zone[FPP_CLASSES];
+static u32   s_fpp_offset;               /* RSX offset of s_fpp_base */
+static u32   s_fpp_used[FPP_CLASSES];    /* slots ever handed out */
+static u32  *s_fpp_free[FPP_CLASSES];    /* released slot indices */
+static u32   s_fpp_nfree[FPP_CLASSES];
+static u32   s_fpp_bytes;
+static int   s_fpp_state;                /* 0 untried, 1 ready, -1 unavailable */
+
+static int fpp_init(void)
+{
+    u32 total = 0, c;
+    u8 *at;
+    if (s_fpp_state)
+        return s_fpp_state > 0;
+    s_fpp_state = -1;
+    for (c = 0; c < FPP_CLASSES; c++)
+        total += k_fpp_slot[c] * k_fpp_slots[c];
+    s_fpp_base = (u8 *)rsxMemalign(128, total);
+    if (!s_fpp_base)
+        return 0;
+    if (rsxAddressToOffset(s_fpp_base, &s_fpp_offset) != 0) {
+        rsxFree(s_fpp_base);
+        s_fpp_base = NULL;
+        return 0;
+    }
+    at = s_fpp_base;
+    for (c = 0; c < FPP_CLASSES; c++) {
+        s_fpp_zone[c] = at;
+        at += k_fpp_slot[c] * k_fpp_slots[c];
+        s_fpp_free[c] = (u32 *)malloc(k_fpp_slots[c] * sizeof(u32));
+        if (!s_fpp_free[c])
+            return 0;
+    }
+    s_fpp_bytes = total;
+    s_fpp_state = 1;
+    return 1;
+}
+
+static void *fpp_alloc(u32 bytes, u32 *offset)
+{
+    u32 c, slot;
+    if (!fpp_init())
+        return NULL;
+    for (c = 0; c < FPP_CLASSES && k_fpp_slot[c] < bytes; c++)
+        ;
+    for (; c < FPP_CLASSES; c++) {
+        if (s_fpp_nfree[c])
+            slot = s_fpp_free[c][--s_fpp_nfree[c]];
+        else if (s_fpp_used[c] < k_fpp_slots[c])
+            slot = s_fpp_used[c]++;
+        else
+            continue;                    /* class full: try the next size up */
+        {
+            u8 *p = s_fpp_zone[c] + (size_t)slot * k_fpp_slot[c];
+            *offset = s_fpp_offset + (u32)(p - s_fpp_base);
+            return p;
+        }
+    }
+    return NULL;
+}
+
+/* Free an RSX allocation: a pool slot back to its class, anything else to the
+ * heap. The quarantine calls this once the GPU is done with the block. */
+void rsx_release_block(void *ptr)
+{
+    u8 *p = (u8 *)ptr;
+    if (!p)
+        return;
+    if (s_fpp_base && p >= s_fpp_base && p < s_fpp_base + s_fpp_bytes) {
+        u32 c;
+        for (c = FPP_CLASSES; c-- > 0;)
+            if (p >= s_fpp_zone[c]) {
+                s_fpp_free[c][s_fpp_nfree[c]++] = (u32)((p - s_fpp_zone[c]) / k_fpp_slot[c]);
+                return;
+            }
+    }
+    rsxFree(ptr);
+}
+
 int rsx_fp_create(RsxFragProgram *fp, const u32 *ucode, u32 words,
                   u32 num_regs, u32 texcoord_mask)
 {
@@ -37,6 +132,11 @@ int rsx_fp_create(RsxFragProgram *fp, const u32 *ucode, u32 words,
 
     /* 64-byte alignment: the fragment program fetch reads whole cache lines,
      * and an unaligned program is a documented way to hang the pipeline. */
+    fp->ucode = fpp_alloc(words * 4, &fp->offset);
+    if (fp->ucode) {
+        memcpy(fp->ucode, ucode, words * 4);
+        goto placed;
+    }
     fp->ucode = rsxMemalign(64, words * 4);
     if (!fp->ucode) {
         LOG_ERROR(LOG_VIDEO, "fp: %u words would not allocate", (unsigned)words);
@@ -55,6 +155,7 @@ int rsx_fp_create(RsxFragProgram *fp, const u32 *ucode, u32 words,
         return -1;
     }
 
+placed:
     fp->words    = words;
     fp->num_regs = num_regs < 1 ? 1 : num_regs;
     fp->texcoords = texcoord_mask;
@@ -70,7 +171,7 @@ void rsx_fp_destroy(RsxFragProgram *fp)
      * would hand them the next program instead. */
     if (fp->ucode) {
         if (g_rsx_fp_release) g_rsx_fp_release(fp->ucode);
-        else rsxFree(fp->ucode);
+        else rsx_release_block(fp->ucode);
     }
     memset(fp, 0, sizeof *fp);
 }

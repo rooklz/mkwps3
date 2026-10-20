@@ -1291,10 +1291,17 @@ int RunTranslateRecursive(string[] argsTail)
                         GqrPossibleWriteMask = (byte)(publicContract.GqrPossibleWriteMask & output.Gqr),
                         HidPossibleWriteMask = (byte)(publicContract.HidPossibleWriteMask & output.Hid)
                     };
+                    // Callers were refined against the general interface, so a variant may only drop
+                    // inputs, never add one: a demanded output the callee does not write would otherwise
+                    // come back as a pass-through input the caller never planned to supply.
+                    var generalContract = stateFreeAbiContracts[target];
                     if (StateFreeInputValueCount(specializedContract) > 4 ||
                         StateFreeOutputValueCount(specializedContract) > 2 ||
                         irInstructionCounts[target] > 96 ||
-                        specializedContract == stateFreeAbiContracts[target])
+                        specializedContract == generalContract ||
+                        (specializedContract.GprReadBeforeWriteMask & ~generalContract.GprReadBeforeWriteMask) != 0 ||
+                        ((specializedContract.FprReadBeforeWriteMask | specializedContract.FprPossibleWriteMask) &
+                         ~(generalContract.FprReadBeforeWriteMask | generalContract.FprPossibleWriteMask)) != 0)
                         continue;
                     var variant = new GuestStateFreeCallVariant(
                         target,

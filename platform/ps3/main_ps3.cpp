@@ -16,6 +16,7 @@
 #include "guest_flat_memory.h"
 #include "recomp_mod_loader.h"
 #include "audio_backend.h"
+#include "runtime_config.h"
 
 #include <atomic>
 #include <cstdio>
@@ -126,7 +127,11 @@ void ReportStats()
     static GxHw::Stats last{};
     static unsigned long long lastFrames = 0;
     const GxHw::Stats s = GxHw::GetStats();
-    const unsigned long long frames = mkw_renderer_frames();
+    // Without a renderer nothing presents; the game's two draw-done finishes a
+    // frame stand in for the count.
+    static unsigned long long proxyFrames = 0;
+    proxyFrames += (s.finishes - last.finishes) / 2;
+    const unsigned long long frames = mkw_renderer_frames() ? mkw_renderer_frames() : proxyFrames;
     const double fps = static_cast<double>(frames - lastFrames) / 5.0;
     const double idleMs = static_cast<double>(s.guestIdleNanos - last.guestIdleNanos) / 1e6;
     // The window is 5 s. A 60 Hz game has 16.7 ms a frame; busy% of 100
@@ -138,7 +143,11 @@ void ReportStats()
         static uint32_t lastEntries = 0;
         const uint32_t entries = g_guestEntries ? *g_guestEntries : 0;
         const unsigned long long nf = frames - lastFrames;
-        std::printf("calls %llu/frame; ", nf ? static_cast<unsigned long long>(entries - lastEntries) / nf : 0ull);
+        // Zero unless the translated code counts entries (MKW_COUNT_CALLS).
+        if (entries != lastEntries) {
+            std::printf("calls %llu/frame; ", nf ? static_cast<unsigned long long>(entries - lastEntries) / nf : 0ull);
+            std::printf("%.3f us/call; ", (5000.0 - idleMs) * 1000.0 / static_cast<double>(entries - lastEntries));
+        }
         lastEntries = entries;
     }
     lastFrames = frames;
@@ -221,7 +230,7 @@ extern "C" int mkw_where(char* out, unsigned cap)
 {
     uint32_t func = 0, lr = 0, sp = 0;
     if (!mkw_guest_sample(&func, &lr, &sp))
-        return std::snprintf(out, cap, "guest not started\n");
+        return std::snprintf(out, cap, "guest not started crumb=%s\n", g_mkwCrumb);
     const CpuContext* cpu = TryGetCpuContext();
     return std::snprintf(out, cap, "func=%08x lr=%08x sp=%08x pc=%08x r3=%08x r4=%08x r31=%08x crumb=%s\n", func,
                          lr, sp, cpu ? cpu->pc : 0u, cpu ? cpu->gpr[3] : 0u, cpu ? cpu->gpr[4] : 0u,
@@ -288,6 +297,7 @@ extern "C" bool g_dynamicAspectRatioEnabled = false;
 
 // ---------------------------------------------------------------------------
 
+
 int main(int argc, char** argv)
 {
     // User state (Config.toml, NAND) and the extracted disc live beside the
@@ -326,6 +336,9 @@ int main(int argc, char** argv)
     });
     mkw_rescue_start();
     mkw_fault_handler_start();
+    // Config.toml is a function-local static the guest, audio and GPU threads
+    // all reach early; read it here, once, before any of them exists.
+    (void)RuntimeConfigFile::Get();
 
     uint64_t guestThread = 0;
     // Translated code keeps one host frame per guest call; 8 MiB covers the

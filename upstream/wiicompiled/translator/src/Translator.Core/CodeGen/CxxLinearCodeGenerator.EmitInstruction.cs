@@ -320,7 +320,7 @@ public sealed partial class CxxLinearCodeGenerator
                     // can't be narrowed when either is present; normalization is built into its own buffer first
                     // so the emit order stays fixed.
                     var argumentNormalization = new StringBuilder();
-                    EmitNormalizeGuestCallFloatArguments(
+                    var normalizedFprs = EmitNormalizeGuestCallFloatArguments(
                         call.Target, call.Arguments, argumentNormalization, pad, localPaired, guestAbiProvider);
                     var callSiteKey = new GuestStateFreeCallSiteKey(currentLabel, addr, directCallOrdinal);
                     var hasCallSiteVariant = stateFreeCallSiteVariants.TryGetValue(callSiteKey, out var callSiteVariant);
@@ -357,9 +357,14 @@ public sealed partial class CxxLinearCodeGenerator
                         AppendFunctionMark(sb, pad);
                         break;
                     }
-                    var boundarySync = usesStateFreeCall || argumentNormalization.Length != 0
+                    var boundarySync = usesStateFreeCall
                         ? ResidencyBoundarySync.Full
                         : ResolveDirectCallBoundarySync(addr, guestAbiContracts, modOverridableCallTargets);
+                    // A normalized argument is rewritten in CpuContext after the flush, so it has to be
+                    // flushed first and its local refreshed after.
+                    for (var fpr = 0; fpr < 32 && !boundarySync.IsFull; ++fpr)
+                        if ((normalizedFprs & (1u << fpr)) != 0)
+                            boundarySync = boundarySync.WithFpr(fpr);
                     if (!boundarySync.IsFull &&
                         IsGuestPairedScalarFloatReturn(guestAbiProvider, call.Target))
                     {
@@ -502,10 +507,16 @@ public sealed partial class CxxLinearCodeGenerator
             case IrIndirectCall icall:
                 {
                     var indirectTarget = ToExpression(icall.Target, types);
-                    AppendFlush(sb, pad);
+                    if (GuestEabiVisibility.TrustFences)
+                        AppendFlush(sb, pad, ResidencyBoundarySync.EabiFencedCall);
+                    else
+                        AppendFlush(sb, pad);
                     sb.AppendLine($"{pad}InvokeIndirectCpu({indirectTarget}, ctx);");
                     AppendFunctionMark(sb, pad);
-                    AppendReload(sb, pad);
+                    if (GuestEabiVisibility.TrustFences)
+                        AppendReload(sb, pad, ResidencyBoundarySync.EabiFencedCall);
+                    else
+                        AppendReload(sb, pad);
                     // f1 is the conventional scalar floating-point return.
                     // Do not retag the other volatile FPRs: a callee that leaves
                     // one untouched also leaves its packed payload untouched.
@@ -730,7 +741,8 @@ public sealed partial class CxxLinearCodeGenerator
     private static bool IsGpuFifoAddress(uint address) =>
         address >= 0xCC008000u && address < 0xCC008100u;
 
-    private static void EmitNormalizeGuestCallFloatArguments(
+    /// <returns>The FPRs normalized in <c>CpuContext</c>.</returns>
+    private static uint EmitNormalizeGuestCallFloatArguments(
         string target,
         IReadOnlyList<IrValue> arguments,
         StringBuilder sb,
@@ -738,6 +750,7 @@ public sealed partial class CxxLinearCodeGenerator
         Dictionary<string, bool> localPaired,
         IGuestFunctionAbiProvider guestAbiProvider)
     {
+        var normalized = 0u;
         foreach (var arg in arguments)
         {
             if (arg.Kind != "register" || arg.RegisterName == null)
@@ -756,7 +769,9 @@ public sealed partial class CxxLinearCodeGenerator
             var regIndex = ParseFloatRegisterIndex(baseName);
             sb.AppendLine($"{pad}ctx->fpr[{regIndex}].d = PPC_PsToScalarInline(ctx->fpr[{regIndex}].d);");
             localPaired[baseName] = false;
+            normalized |= 1u << regIndex;
         }
+        return normalized;
     }
 
     private static void EmitNormalizeGuestCallFloatReturn(
