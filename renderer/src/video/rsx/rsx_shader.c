@@ -186,8 +186,11 @@ u32 rsx_fp_readback(const RsxFragProgram *fp, u32 *out, u32 max_words)
  * uploads are ordered in the command stream with the draws, so skipping an
  * identical row is exact. */
 #define VP_CONST_ROWS 468
-static f32 s_vpc_shadow[VP_CONST_ROWS * 4];
-static u8  s_vpc_known[VP_CONST_ROWS];
+/* Shared with the vector-register path in rsx_shader.h (rsx_vpc_row). */
+f32 g_vpc_shadow[VP_CONST_ROWS * 4] __attribute__((aligned(16)));
+u8  g_vpc_known[VP_CONST_ROWS];
+#define s_vpc_shadow g_vpc_shadow
+#define s_vpc_known  g_vpc_known
 
 void rsx_vp_constants_invalidate(void)
 {

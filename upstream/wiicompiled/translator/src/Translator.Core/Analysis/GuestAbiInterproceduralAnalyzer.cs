@@ -40,7 +40,8 @@ public static class GuestAbiInterproceduralAnalyzer
             0,
             addresses.Length,
             parallelOptions,
-            index => current[index] = GuestAbiContractAnalyzer.Analyze(bodies[index]));
+            index => current[index] = GuestEabiVisibility.Apply(
+                addresses[index], GuestAbiContractAnalyzer.Analyze(bodies[index])));
 
         var contracts = new Dictionary<uint, GuestAbiContract>(addresses.Length);
         for (var index = 0; index < addresses.Length; ++index) contracts.Add(addresses[index], current[index]);
@@ -95,7 +96,8 @@ public static class GuestAbiInterproceduralAnalyzer
             Parallel.For(0, worklistCount, parallelOptions, position =>
             {
                 var ordinal = worklist[position];
-                var next = GuestAbiContractAnalyzer.Analyze(bodies[ordinal], visible);
+                var next = GuestEabiVisibility.Apply(
+                    addresses[ordinal], GuestAbiContractAnalyzer.Analyze(bodies[ordinal], visible));
                 roundResults[position] = Equivalent(current[ordinal], next) ? null : next;
             });
 

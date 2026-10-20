@@ -73,6 +73,22 @@ u32 g_xf_generation;   /* bumped on every XF memory write; lets the render
  * values, so a matrix write must not force it. */
 u32 g_prog_generation;
 
+/* Narrower generations for the per-draw constant caches: matrix loads bump
+ * g_xf_generation on every draw, but lights, material colours and the
+ * post-transform matrices are written rarely, and keying their uploads on the
+ * global counter rebuilt them -- with int-to-float conversions the PPE pays
+ * dearly for -- on every draw. A write anywhere in a range bumps its counter. */
+u32 g_xf_light_generation;   /* lights, channel colours and controls */
+u32 g_xf_post_generation;    /* post-transform matrices and their indices */
+
+static void xf_note_region(u16 a)
+{
+    if ((a >= 0x0600u && a < 0x0680u) || (a >= 0x100Au && a <= 0x1011u))
+        g_xf_light_generation++;
+    else if ((a >= 0x0500u && a < 0x0600u) || (a >= 0x1050u && a < 0x1058u))
+        g_xf_post_generation++;
+}
+
 static int xf_addr_affects_program(u16 a)
 {
     if (a == XF_NUMTEXGENS || a == XF_NUMCOLORS || a == XF_DUALTEXTRAN)
@@ -124,6 +140,8 @@ void gx_state_load_xf(GXState *g, u16 addr, const u32 *values, unsigned count)
         }
         if (xf_addr_affects_program(a) && g->xf.mem[a] != values[i])
             prog = 1;
+        if (g->xf.mem[a] != values[i])
+            xf_note_region(a);
         g->xf.mem[a] = values[i];
         xf_mirror_touch(&g->xf, a);
         xf_decode(&g->xf, a);
@@ -225,6 +243,8 @@ void gx_state_load_index(GXState *g, u8 which, u16 index, u16 xf_addr, u8 count)
             u32 w = host ? dol_be32(host + i * 4u) : mem_read32(src + i * 4u);
             if (xf_addr_affects_program(a) && g->xf.mem[a] != w)
                 g_prog_generation++;
+            if (g->xf.mem[a] != w)
+                xf_note_region(a);
             g->xf.mem[a] = w;
             xf_mirror_touch(&g->xf, a);
         }

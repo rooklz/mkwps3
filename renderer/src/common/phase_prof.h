@@ -89,6 +89,11 @@ enum {
 /* The port has no JIT; its slot times shader program generation, split out
  * of PH_SHADER so a cache miss and a cache lookup are told apart. */
 #define PH_SHGEN PH_JIT
+/* Sub-phases of the draw path, in slots the port does not otherwise use. */
+#define PH_DDPRE  PH_TIMING     /* on_draw up to the batching decision      */
+#define PH_CONSTS PH_OVERLAY    /* matrix constants                         */
+#define PH_LIGHTS PH_PAD        /* lights, material, post matrices, fog     */
+#define PH_BINDS  PH_DEVIO      /* attribute binds and the draw itself      */
 
 #define PROF_STACK_MAX 32
 

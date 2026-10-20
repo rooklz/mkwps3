@@ -629,6 +629,9 @@ void ServicePresent()
         g_sink->present(g_sink->ctx, req.xfb, req.width, req.height, req.black);
 }
 
+extern "C" void mkw_prof_parse_begin(void) __attribute__((weak));
+extern "C" void mkw_prof_parse_end(void) __attribute__((weak));
+
 void GpuThreadMain(void*)
 {
     MkwPinArenaOnThisThread();
@@ -651,6 +654,7 @@ void GpuThreadMain(void*)
         }
 
         const uint64_t t0 = Timebase();
+        mkw_prof_parse_begin();
         const size_t off = static_cast<size_t>(consumed % kRingBytes);
         const size_t avail = static_cast<size_t>(written - consumed);
         const size_t first = (off + avail <= kRingBytes) ? avail : kRingBytes - off;
@@ -673,6 +677,7 @@ void GpuThreadMain(void*)
         consumed += used;
         g_bytesParsed.store(consumed, std::memory_order_relaxed);
         g_consumed.store(consumed, std::memory_order_release);
+        mkw_prof_parse_end();
         g_gpuBusyTicks += Timebase() - t0;
         if (used == 0) {
             // Incomplete command and nothing newer yet.

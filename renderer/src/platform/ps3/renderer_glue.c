@@ -135,9 +135,9 @@ static u64 s_prof_window_frames;
 static void prof_snapshot(void)
 {
     static const char *const names[PH_COUNT] = {
-        "other(parse+wait)", "shader_gen", "-", "gx_fifo", "gx_state", "draw_disp", "spu_job", "vertex",
-        "WAIT spu", "texture", "shader", "rsx_cmd", "present", "WAIT vsync", "WAIT gpu", "-", "-",
-        "-", "-", "-", "-"};
+        "other(parse+wait)", "shader_gen", "dd_pre", "gx_fifo", "gx_state", "draw_disp", "spu_job", "vertex",
+        "WAIT spu", "texture", "shader", "rsx_cmd", "present", "WAIT vsync", "WAIT gpu", "consts", "lights",
+        "-", "binds", "-", "-"};
     int i, k = 0;
     const double ms_per_tick = 1000.0 / 79800000.0;
     u64 frames = s_prof_window_frames ? s_prof_window_frames : 1;
@@ -236,6 +236,17 @@ int mkw_renderer_stats(char *out, unsigned cap)
                 return n;
             out += m; cap -= (unsigned)m; n += m;
         }
+    }
+    {
+        extern u64 g_sg_ticks[4], g_sg_count;
+        const double us = 1.0 / 79.8;
+        const double k = g_sg_count ? 1.0 / (double)g_sg_count : 0.0;
+        int m = snprintf(out, cap, "shader builds=%llu per build us: evict %.1f vp %.1f fp %.1f upload %.1f\n",
+                         (unsigned long long)g_sg_count, g_sg_ticks[0] * us * k, g_sg_ticks[1] * us * k,
+                         g_sg_ticks[2] * us * k, g_sg_ticks[3] * us * k);
+        if (m < 0 || (unsigned)m >= cap)
+            return n;
+        out += m; cap -= (unsigned)m; n += m;
     }
     {
         extern int rsx_debug_state(char *out, unsigned cap);
@@ -370,6 +381,11 @@ static void sink_draw_run(void *ctx, unsigned vat, const uint8_t *commands, uint
                       prims, vertices, indices, vertex_size);
     prof_exit();
 }
+
+/* The runtime's FIFO parser, timed as its own region (gx_fifo) so the
+ * profile separates parsing from the work outside it. */
+void mkw_prof_parse_begin(void) { prof_enter(PH_GXFIFO); }
+void mkw_prof_parse_end(void) { prof_exit(); }
 
 static void sink_present(void *ctx, uint32_t xfb, uint32_t width, uint32_t height, _Bool black)
 {

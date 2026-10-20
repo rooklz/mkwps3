@@ -137,7 +137,10 @@ public sealed partial class CxxLinearCodeGenerator
             func, minimumAccesses: hasProvenKernelEntry ? 2 : 8, ignoreDisabledPcTraces: true,
             scalarOnly: !hasProvenKernelEntry);
         var architecturalFunc = func;
-        var guestAbiContract = GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts);
+        var guestAbiContract = MarkAddressOf(func) is { } contractAddress
+            ? GuestEabiVisibility.Apply(contractAddress,
+                GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts))
+            : GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts);
         var cfg = IrCfg.Build(func);
         // Condition-flag elision is planned once against the final IR so every
         // emission of this body (recording pass, public entry, state-free
@@ -166,13 +169,20 @@ public sealed partial class CxxLinearCodeGenerator
         // expression layer instead of rewriting text, and covers non-leaf bodies too);
         // residency owns every primary body, so the text-rewriting cache survives only for the state-free clone below.
         var residencyOwnsPrimaryBody = !emitStateFreeLeafVariant;
+        // A state-free clone passes its state-free callees exactly their state-free inputs, which can
+        // include registers the callee's public contract does not read (a may-write value it must hand
+        // back unchanged on a path that does not write it). The cache has to see those too, or the clone
+        // is left reading them from a CpuContext it does not have.
+        var cacheContracts = emitStateFreeLeafVariant
+            ? WithStateFreeCallInputs(guestAbiContracts, stateFreeAbiContracts)
+            : guestAbiContracts;
         var cachedRegisters = emitStateFreeLeafVariant
-            ? CollectLeafRegisterCacheRegisters(func, _guestAbiProvider, guestAbiContracts)
+            ? CollectLeafRegisterCacheRegisters(func, _guestAbiProvider, cacheContracts)
             : LeafRegisterCache.Empty;
         var registerCacheInitializers = !cachedRegisters.IsEmpty
             ? BuildLeafRegisterCacheInitializers(
                 func, cfg, cachedRegisters, _guestAbiProvider,
-                emitStateFreeLeafVariant ? guestAbiContracts : null)
+                emitStateFreeLeafVariant ? cacheContracts : null)
             : LeafRegisterCacheInitializers.Empty;
         var sb = new StringBuilder();
         sb.AppendLine("#include <cstdint>");
@@ -266,6 +276,8 @@ public sealed partial class CxxLinearCodeGenerator
         var emittedLocalLabelAddresses = new SortedSet<uint>();
         string EmitFunctionBody(RegisterResidency? residency, int bufferBaseLength, bool discardResult = false)
         {
+            var previousMarkAddress = _markAddress;
+            _markAddress = MarkAddressOf(func);
             var previousResidency = _activeResidency;
             var previousDirectCallTargets = _emittedDirectCallTargets;
             var previousLocalLabels = _emittedLocalLabelAddresses;
@@ -323,6 +335,7 @@ public sealed partial class CxxLinearCodeGenerator
                 }
                 EmitHoistedGqrPrologue(body, hoistedGqrIndices);
 
+                AppendFunctionEntryMark(body, "    ");
                 body.AppendLine($"    goto {labelNames[func.EntryLabel]};");
                 body.AppendLine();
 
@@ -413,7 +426,12 @@ public sealed partial class CxxLinearCodeGenerator
                             break;
 
                         case IrReturn ret:
-                            AppendFlush(body, "    ");
+                            // Only what a caller can observe under the EABI goes back to
+                            // CpuContext (GuestEabiVisibility); exempt bodies publish everything.
+                            if (_markAddress is { } exitAddress && GuestEabiVisibility.Applies(exitAddress))
+                                AppendFlush(body, "    ", ResidencyBoundarySync.EabiReturn);
+                            else
+                                AppendFlush(body, "    ");
                             body.AppendLine("    return;");
                             break;
 
@@ -504,6 +522,7 @@ public sealed partial class CxxLinearCodeGenerator
                 body.Clear();
                 _reusableFunctionBodyBuilder = body;
                 _activeResidency = previousResidency;
+                _markAddress = previousMarkAddress;
                 _emittedDirectCallTargets = previousDirectCallTargets;
                 _emittedLocalLabelAddresses = previousLocalLabels;
                 _activeGpuFifoBurstSlot = previousFifoBurstSlot;

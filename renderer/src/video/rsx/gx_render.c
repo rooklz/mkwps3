@@ -6,6 +6,14 @@
 #include "spu_vtx_shared.h"
 int vtx_build_spu_job(const GXCPRegs *cp, unsigned vat, u32 stream_addr,
                       unsigned count, u64 dest_ea, SpuVtxJob *job);
+#include <altivec.h>
+/* Four floats from a 4-byte-aligned address, without staging them through
+ * a scalar copy (which costs a load-hit-store on the PPE). */
+static inline vector float vld_u(const u32 *p)
+{
+    const float *f = (const float *)p;
+    return vec_perm(vec_ld(0, f), vec_ld(15, f), vec_lvsl(0, f));
+}
 #include "tev_program.h"
 #include "xf_program.h"
 #include "vp_emitter.h"
@@ -2161,6 +2169,9 @@ int g_shader_flush_req;
 int g_fp_dump_req;
 
 static ShaderEntry *shaders_for_state_impl(const GXState *g);
+/* Where a shader build's time goes: evicting the slot, the vertex program,
+ * the fragment program, the uploads. Timebase ticks, cumulative. */
+u64 g_sg_ticks[4], g_sg_count;
 
 static ShaderEntry *shaders_for_state(const GXState *g)
 {
@@ -2233,6 +2244,7 @@ static ShaderEntry *shaders_for_state_impl(const GXState *g)
     }
 
     prof_enter(PH_SHGEN);
+    u64 sg_t0 = prof_tb();
     if (e->used)
         rsx_fp_destroy(&e->fp);
     free(e->vp_code);       /* uploaded through the ring at bind: nothing
@@ -2247,6 +2259,8 @@ static ShaderEntry *shaders_for_state_impl(const GXState *g)
         static u32 fp_code[FP_WORDS_MAX];
         static u32 vp_code[VP_WORDS_MAX];
 
+        u64 sg_t1 = prof_tb();
+        g_sg_ticks[0] += sg_t1 - sg_t0;          /* evict */
         vp_init(&ve, vp_code, VP_WORDS_MAX);
         if (xf_generate(g, &ve, &xinfo) != 0 || ve.overflow || xinfo.truncated) {
             /* Counted, not only logged: a program that does not fit means the
@@ -2258,6 +2272,8 @@ static ShaderEntry *shaders_for_state_impl(const GXState *g)
             return NULL;
         }
 
+        u64 sg_t2 = prof_tb();
+        g_sg_ticks[1] += sg_t2 - sg_t1;          /* vertex program */
         fp_init(&fe, fp_code, FP_WORDS_MAX);
         if (tev_generate(&g->bp, &fe, &tinfo) != 0 || fe.overflow ||
             tinfo.truncated) {
@@ -2266,6 +2282,8 @@ static ShaderEntry *shaders_for_state_impl(const GXState *g)
             return NULL;
         }
 
+        u64 sg_t3 = prof_tb();
+        g_sg_ticks[2] += sg_t3 - sg_t2;          /* fragment program */
         e->vp_code = (u32 *)malloc(ve.used * sizeof(u32));
         if (!e->vp_code)
             return NULL;
@@ -2279,6 +2297,8 @@ static ShaderEntry *shaders_for_state_impl(const GXState *g)
         if (rsx_fp_create(&e->fp, fp_code, fe.used, tinfo.temps_used,
                           tev_texcoord_mask(&g->bp)) != 0)
             return NULL;
+        g_sg_ticks[3] += prof_tb() - sg_t3;      /* upload */
+        g_sg_count++;
     }
 
     e->key  = e_key;
@@ -3235,9 +3255,27 @@ static int batch_append(const GXState *g, GXPrimitive prim, unsigned vat,
     return 1;
 }
 
+static void on_draw_impl(void *ctx, const struct GXState *state, GXPrimitive prim,
+                         unsigned vat, u16 vertex_count, u32 data_addr,
+                         u32 vertex_size);
+
+/* The draw path, with its head (debug filters, culling, the batching
+ * decision) timed as dd_pre; the wrapper keeps the region stack balanced
+ * whichever way the path returns. */
 static void on_draw(void *ctx, const struct GXState *state, GXPrimitive prim,
                     unsigned vat, u16 vertex_count, u32 data_addr,
                     u32 vertex_size)
+{
+    const int depth = g_prof.depth;
+    prof_enter(PH_DDPRE);
+    on_draw_impl(ctx, state, prim, vat, vertex_count, data_addr, vertex_size);
+    while (g_prof.depth > depth && prof_thread() == g_prof.owner && g_prof.enabled)
+        prof_exit();
+}
+
+static void on_draw_impl(void *ctx, const struct GXState *state, GXPrimitive prim,
+                         unsigned vat, u16 vertex_count, u32 data_addr,
+                         u32 vertex_size)
 {
     const GXState *g = state;
     gcmContextData *c = rsx_context();
@@ -3509,6 +3547,7 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
         return;
     }
 
+    prof_exit();                        /* dd_pre */
     if (g_batch_enable && !s_run.active &&
         batch_append(g, prim, vat, vertex_count, data_addr, vertex_size))
         return;
@@ -3697,6 +3736,7 @@ decode_done:
      * here are twelve command words and are counted with it rather than with
      * PH_CMD -- they are the transform's output, not general state. */
     prof_enter(PH_VTX);
+    prof_enter(PH_CONSTS);
     /* The projection is uploaded as the 4x4 matrix the generated program
      * reads. GX stores six parameters rather than a matrix -- the same
      * frustum/ortho values the hardware expands -- so it is expanded here,
@@ -3754,142 +3794,91 @@ decode_done:
             memcpy(lk, k2v, sizeof lk); lk_valid = 1;
         }
 
-        gx_projection_matrix(&g->xf, P);
-        if (posmtx_idx == 0xFFu) {
-            /* Vertices were already pre-transformed by their per-vertex
-             * position matrix into view space. Use M = Identity. */
-            memset(M, 0, sizeof M);
-            M[0] = 1.0f; M[5] = 1.0f; M[10] = 1.0f; M[15] = 1.0f;
-        } else {
-            for (r2 = 0; r2 < 3; r2++)
-                for (c2 = 0; c2 < 4; c2++) {
-                    cv.u = raw[r2 * 4 + c2];
-                    M[r2 * 4 + c2] = cv.f;
-                }
-            M[12] = 0.0f; M[13] = 0.0f; M[14] = 0.0f; M[15] = 1.0f;
-        }
-
-        /* C = P x M on the vector unit.
-         *
-         * The PPE has VMX and this port had never used it for anything but
-         * alignment. A row-major 4x4 combine is the case it is built for: each
-         * result row is P[r][0]*M0 + P[r][1]*M1 + P[r][2]*M2 + P[r][3]*M3, so
-         * four splat-and-multiply-add steps replace sixteen scalar
-         * multiply-adds, and the whole 64-operation combine becomes 16 vector
-         * operations. It runs for every draw that changes a matrix, on the
-         * side of the machine that is the bottleneck.
-         *
-         * vec_madd is a fused multiply-add, so the rounding differs very
-         * slightly from the separate multiply and add it replaces. That is
-         * safe here: these are host render-transform values assembled for the
-         * RSX, never guest-visible state, and the guest cannot observe them. */
         {
-            vector float m0 = vec_ld(0,  M);
-            vector float m1 = vec_ld(16, M);
-            vector float m2 = vec_ld(32, M);
-            vector float m3 = vec_ld(48, M);
-            vector float zero = (vector float){0.0f, 0.0f, 0.0f, 0.0f};
-            for (r2 = 0; r2 < 4; r2++) {
-                vector float p = vec_ld((int)(r2 * 16), P);
-                vector float acc;
-                acc = vec_madd(vec_splat(p, 0), m0, zero);
-                acc = vec_madd(vec_splat(p, 1), m1, acc);
-                acc = vec_madd(vec_splat(p, 2), m2, acc);
-                acc = vec_madd(vec_splat(p, 3), m3, acc);
-                vec_st(acc, (int)(r2 * 16), C);
+            /* All in vector registers: rows are loaded straight from XF
+             * memory, the projection is cached until its registers change,
+             * and rsx_vpc_rows compares and uploads without a store/load
+             * round trip (rsx_shader.h). */
+            static vector float s_P[4];
+            static u32 s_pkey[12];
+            static int s_pkey_valid;
+            const vector float zero = (vector float){0.0f, 0.0f, 0.0f, 0.0f};
+            const vector float w1 = (vector float){0.0f, 0.0f, 0.0f, 1.0f};
+            vector float m0, m1, m2, c0, c1, c2, c3;
+            {
+                u32 pk[12];
+                union { f32 f; u32 u; } pu;
+                unsigned q;
+                for (q = 0; q < 6; q++) { pu.f = g->xf.projection[q]; pk[q] = pu.u; }
+                pk[6] = g->xf.projection_orthographic;
+                pk[7] = g->xf.mem[0x101A]; pk[8] = g->xf.mem[0x101D];
+                pk[9] = g->xf.mem[0x1019]; pk[10] = g->xf.mem[0x101C];
+                pk[11] = (u32)g_gx_state_mask;
+                if (!s_pkey_valid || memcmp(pk, s_pkey, sizeof pk) != 0) {
+                    gx_projection_matrix(&g->xf, P);
+                    s_P[0] = vec_ld(0, P);  s_P[1] = vec_ld(16, P);
+                    s_P[2] = vec_ld(32, P); s_P[3] = vec_ld(48, P);
+                    memcpy(s_pkey, pk, sizeof pk);
+                    s_pkey_valid = 1;
+                }
             }
-            (void)c2; (void)k2;
-        }
-        rsx_vp_constants(XF_CONST_PROJ, 4, C);
-
-        /* The combined projection x position matrix actually handed to the
-         * vertex program, for the first few perspective draws. Everything up
-         * to here has been verified off-console (geometry submitted, programs
-         * generated, viewport full-screen, culling ruled out), so if the world
-         * is invisible the transform is the last thing that can be wrong -- and
-         * only hardware runs it. Logged as scaled integers: LOG has no %f. */
-        if (!g->xf.projection_orthographic && s_cmat_logged < 4) {
-            s_cmat_logged++;
-            LOG_INFO(LOG_CORE,
-                     "CMAT[%u] pm=%u r0=%d,%d,%d,%d r1=%d,%d,%d,%d",
-                     s_cmat_logged, posmtx_idx,
-                     (int)(C[0]*1000.f),  (int)(C[1]*1000.f),
-                     (int)(C[2]*1000.f),  (int)(C[3]*1000.f),
-                     (int)(C[4]*1000.f),  (int)(C[5]*1000.f),
-                     (int)(C[6]*1000.f),  (int)(C[7]*1000.f));
-            LOG_INFO(LOG_CORE,
-                     "CMAT[%u] r2=%d,%d,%d,%d r3=%d,%d,%d,%d",
-                     s_cmat_logged,
-                     (int)(C[8]*1000.f),  (int)(C[9]*1000.f),
-                     (int)(C[10]*1000.f), (int)(C[11]*1000.f),
-                     (int)(C[12]*1000.f), (int)(C[13]*1000.f),
-                     (int)(C[14]*1000.f), (int)(C[15]*1000.f));
-            LOG_INFO(LOG_CORE,
-                     "CMAT[%u] posmtx r0=%d,%d,%d,%d",
-                     s_cmat_logged,
-                     (int)(M[0]*1000.f), (int)(M[1]*1000.f),
-                     (int)(M[2]*1000.f), (int)(M[3]*1000.f));
-        }
-
-        /* Texture-coordinate matrices: same story as the position matrix --
-         * the program has always multiplied by these constant slots, and
-         * nothing ever wrote them. An all-zero matrix maps every UV to the
-         * atlas corner texel, which painted the whole UI flat white (or flat
-         * black while the TEV colours were also zero).
-         *
-         * Three rows, not two. A texgen configured for STQ divides by the
-         * third row, and 172 of the 612 texgens on the disc are -- with two
-         * rows uploaded and the third left as an identity, every one of them
-         * divides by 1 and the projection quietly does not happen.
-         *
-         * And one matrix per *texgen the program has*, not a fixed two. GX
-         * allows eight; the vertex carries four texture coordinates, but a
-         * texgen whose source row is the normal or the geometry needs its
-         * matrix regardless of how many coordinates the vertex has. Driving
-         * the loop from the generated program's texgen count also means a
-         * draw with one coordinate uploads one matrix rather than two. */
-        for (r2 = 0; r2 < sh->xinfo.texgens && r2 < GX_NUM_TEXCOORD; r2++) {
-            f32 T[16];
-            u32 info_tg = g->xf.mem[0x1040 + r2];
-            unsigned srcrow_tg = (info_tg >> 7) & 0x1Fu;
-            if (posmtx_idx == 0xFFu && (srcrow_tg == 0 || srcrow_tg == 1) &&
-                texmtx_idx[r2] == (mem_read8(data_addr) & 0x3Fu)) {
-                /* When vertices/normals are already in view space and the
-                 * texgen uses the same view-space matrix (pos/nrm), upload
-                 * Identity so it isn't applied twice. */
-                memset(T, 0, sizeof T);
-                T[0] = 1.0f; T[5] = 1.0f; T[10] = 1.0f; T[15] = 1.0f;
-            } else {
-                const u32 *traw = &g->xf.mem[texmtx_idx[r2] * 4u];
-                unsigned rr, cc4;
-                for (rr = 0; rr < 3; rr++)
-                    for (cc4 = 0; cc4 < 4; cc4++) {
-                        cv.u = traw[rr * 4 + cc4];
-                        T[rr * 4 + cc4] = cv.f;
-                    }
-                T[12] = 0; T[13] = 0; T[14] = 0; T[15] = 1;
-            }
-            rsx_vp_constants(XF_CONST_TEXMTX(r2), 4, T);
-        }
-
-        /* The model-view matrix on its own, and the normal matrix, for
-         * lighting and for a texgen whose source row is the geometry or the
-         * normal. Uploaded only when the generated program reads them, and
-         * unpacked by xf_program.c rather than here: every one of these is a
-         * byte order or a memory layout, and xf_program.c is the half of the
-         * pipeline that a test can link. */
-        if (sh->xinfo.uses_posmtx) {
-            f32 N[12];
-            rsx_vp_constants(XF_CONST_POSMTX, 3, M);
             if (posmtx_idx == 0xFFu) {
-                memset(N, 0, sizeof N);
-                N[0] = 1.0f; N[5] = 1.0f; N[10] = 1.0f;
+                /* Vertices were already pre-transformed by their per-vertex
+                 * matrices (the SPU skinned them). */
+                m0 = (vector float){1.0f, 0.0f, 0.0f, 0.0f};
+                m1 = (vector float){0.0f, 1.0f, 0.0f, 0.0f};
+                m2 = (vector float){0.0f, 0.0f, 1.0f, 0.0f};
             } else {
-                xf_normal_matrix(&g->xf, posmtx_idx, N);
+                m0 = vld_u(raw);
+                m1 = vld_u(raw + 4);
+                m2 = vld_u(raw + 8);
             }
-            rsx_vp_constants(XF_CONST_NRMMTX, 3, N);
+#define CROW(p) vec_madd(vec_splat(p, 0), m0, vec_madd(vec_splat(p, 1), m1, \
+                    vec_madd(vec_splat(p, 2), m2, vec_madd(vec_splat(p, 3), w1, zero))))
+            c0 = CROW(s_P[0]); c1 = CROW(s_P[1]); c2 = CROW(s_P[2]); c3 = CROW(s_P[3]);
+#undef CROW
+            rsx_vpc_rows(XF_CONST_PROJ, 4, c0, c1, c2, c3);
+
+            /* Texture-coordinate matrices: same story as the position matrix. */
+            for (r2 = 0; r2 < sh->xinfo.texgens && r2 < GX_NUM_TEXCOORD; r2++) {
+                u32 info_tg = g->xf.mem[0x1040 + r2];
+                unsigned srcrow_tg = (info_tg >> 7) & 0x1Fu;
+                if (posmtx_idx == 0xFFu && (srcrow_tg == 0 || srcrow_tg == 1) &&
+                    texmtx_idx[r2] == (mem_read8(data_addr) & 0x3Fu)) {
+                    /* Vertices and normals are already in view space and the
+                     * texgen names the same matrix: identity. */
+                    rsx_vpc_rows(XF_CONST_TEXMTX(r2), 4,
+                                 (vector float){1.0f, 0.0f, 0.0f, 0.0f},
+                                 (vector float){0.0f, 1.0f, 0.0f, 0.0f},
+                                 (vector float){0.0f, 0.0f, 1.0f, 0.0f}, w1);
+                } else {
+                    const u32 *traw = &g->xf.mem[texmtx_idx[r2] * 4u];
+                    rsx_vpc_rows(XF_CONST_TEXMTX(r2), 4, vld_u(traw), vld_u(traw + 4),
+                                 vld_u(traw + 8), w1);
+                }
+            }
+
+            /* The model-view matrix on its own, and the normal matrix, for
+             * programs that light or generate from the normal. */
+            if (sh->xinfo.uses_posmtx) {
+                rsx_vpc_rows(XF_CONST_POSMTX, 3, m0, m1, m2, zero);
+                if (posmtx_idx == 0xFFu) {
+                    rsx_vpc_rows(XF_CONST_NRMMTX, 3, m0, m1, m2, zero);
+                } else {
+                    /* Three packed rows of three (xf_normal_matrix). */
+                    const u32 *nraw = &g->xf.mem[0x0400u + 3u * (posmtx_idx & 31u)];
+                    const vector unsigned int xyz = (vector unsigned int){~0u, ~0u, ~0u, 0u};
+                    rsx_vpc_rows(XF_CONST_NRMMTX, 3,
+                                 vec_and(vld_u(nraw), (vector float)xyz),
+                                 vec_and(vld_u(nraw + 3), (vector float)xyz),
+                                 vec_and(vld_u(nraw + 6), (vector float)xyz), zero);
+                }
+            }
+            (void)M; (void)C; (void)c2; (void)k2; (void)cv;
         }
     matrices_done: ;
+        prof_exit();
+        prof_enter(PH_LIGHTS);
 
         /* Lights, material and the post-transform matrices all come out of XF
          * memory, and g_xf_generation already tracks every write to it. They
@@ -3903,10 +3892,10 @@ decode_done:
          * program actually reads, so a draw that changes only its object
          * matrix no longer re-sends the scene's lighting. */
         {
-            extern u32 g_xf_generation;
+            extern u32 g_xf_light_generation, g_xf_post_generation;
             static u32 lk3[4]; static int lk3_valid;
             u32 k3[4];
-            k3[0] = g_xf_generation ^ (s_const_epoch << 16);
+            k3[0] = (g_xf_light_generation * 0x9E3779B1u) ^ g_xf_post_generation ^ (s_const_epoch << 16);
             k3[1] = sh->xinfo.lights_used;
             k3[2] = sh->xinfo.uses_channels;
             k3[3] = sh->xinfo.post_used;
@@ -3975,6 +3964,7 @@ decode_done:
         }
     }
 
+    prof_exit();                        /* lights */
     prof_exit();                        /* PHASE PROFILE: end transform */
 
 #ifdef __PS3__
@@ -4027,7 +4017,7 @@ decode_done:
             return;
     }
 #endif
-    prof_enter(PH_CMD);                 /* PHASE PROFILE: binds + the draw */
+    prof_enter(PH_BINDS);               /* PHASE PROFILE: binds + the draw */
     {
         u32 off = spu_draw_active ? spu_draw_io_off
                 : s_arena_offset + base_vertex * sizeof(RenderVertex);

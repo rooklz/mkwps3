@@ -45,6 +45,7 @@ extern "C" unsigned long long mkw_renderer_frames(void);
 namespace {
 
 extern volatile uint32_t* g_guestExecAddr;
+extern volatile uint32_t* g_guestEntries;
 std::atomic<bool> g_fatalReported{false};
 std::atomic<int> g_exitCode{0};
 std::atomic<bool> g_guestDone{false};
@@ -77,6 +78,7 @@ void GuestMain(void*)
 {
     mkw_rescue_register_thread(0);
     g_guestExecAddr = &RecompMod::g_currentTranslatedExecutionAddress;
+    g_guestEntries = &RecompMod::g_translatedEntries;
     try {
         SystemBridge::Initialize();
         TranslatedFunctionRegistry::Finalize();
@@ -131,6 +133,14 @@ void ReportStats()
     // means the game thread never waited for the next retrace.
     std::printf("[stats] %.1f fps, game thread busy %.0f%% (%.1f ms per 60 Hz frame); ", fps,
                 100.0 * (5000.0 - idleMs) / 5000.0, (5000.0 - idleMs) / 300.0);
+    {
+        // Translated function entries on the guest thread, per presented frame.
+        static uint32_t lastEntries = 0;
+        const uint32_t entries = g_guestEntries ? *g_guestEntries : 0;
+        const unsigned long long nf = frames - lastFrames;
+        std::printf("calls %llu/frame; ", nf ? static_cast<unsigned long long>(entries - lastEntries) / nf : 0ull);
+        lastEntries = entries;
+    }
     lastFrames = frames;
     {
         uint64_t freeBytes = 0, totalBytes = 0;
@@ -162,6 +172,7 @@ void ReportStats()
 
 namespace {
 volatile uint32_t* g_guestExecAddr = nullptr;
+volatile uint32_t* g_guestEntries = nullptr;
 }
 
 extern "C" int mkw_guest_sample(uint32_t* func, uint32_t* lr, uint32_t* sp)

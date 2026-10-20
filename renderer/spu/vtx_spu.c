@@ -485,6 +485,224 @@ static void decode_vertex(const SpuVtxJob *j, const uint8_t *vp, float *ov, int 
     if (have_idx) skin_vertex(ov, pidx, have_nrm);
 }
 
+/* ---------------- vectorised decode ---------------------------------
+ *
+ * The decode above reads byte by byte, switches per component and divides in
+ * software (the SPU has no divide): about 3,000 cycles a vertex, which made
+ * the SPUs the thing every command-buffer wrap waited on. This one is planned
+ * once per job -- each attribute's offset in the vertex, its source (stream
+ * or window) and its conversion -- and then each attribute is one unaligned
+ * quadword load, a shuffle that places the components in word slots with
+ * their sign, and a convert. A vertex is written as four quadword stores.
+ *
+ * It covers every format the protocol can express; only a job whose index
+ * window did not fit (gather[]) still takes the scalar path. */
+typedef struct {
+    const uint8_t *base;   /* indexed: element 0 of the array as fetched */
+    vec_float4 scale;
+    vec_uint4  keep;       /* lanes holding real components */
+    uint16_t soff;         /* the attribute's offset within a vertex */
+    uint16_t stride;
+    uint8_t  kind, mode, fmt, count;
+} PlanAttr;
+
+static PlanAttr plan[SPU_VTX_MAX_ATTRS];
+static unsigned plan_n;
+
+static const vec_uchar16 k_id  = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+static const vec_uchar16 k_s16 = {0,1,0x80,0x80, 2,3,0x80,0x80, 4,5,0x80,0x80, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_u16 = {0x80,0x80,0,1, 0x80,0x80,2,3, 0x80,0x80,4,5, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_s8  = {0,0x80,0x80,0x80, 1,0x80,0x80,0x80, 2,0x80,0x80,0x80, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_u8  = {0x80,0x80,0x80,0, 0x80,0x80,0x80,1, 0x80,0x80,0x80,2, 0x80,0x80,0x80,0x80};
+/* RGB8 -> RGBA8 with alpha 0xFF (0xC0 in a shuffle pattern makes 0xFF). */
+static const vec_uchar16 k_rgb = {0,1,2,0xC0, 0,1,2,0xC0, 0,1,2,0xC0, 0,1,2,0xC0};
+/* Two (s, t) pairs into one quadword. */
+static const vec_uchar16 k_tex2 = {0,1,2,3, 4,5,6,7, 16,17,18,19, 20,21,22,23};
+
+static inline vec_uchar16 ldu(const uint8_t *p)
+{
+    const vec_uchar16 *a = (const vec_uchar16 *)((uintptr_t)p & ~(uintptr_t)15);
+    /* Byte-wise k_id + offset, done as word adds: no byte exceeds 30, so
+     * nothing carries into its neighbour. */
+    const vec_uchar16 pat = (vec_uchar16)spu_add((vec_uint4)k_id,
+                                                 spu_splats(((uint32_t)(uintptr_t)p & 15u) * 0x01010101u));
+    return spu_shuffle(a[0], a[1], pat);
+}
+
+static inline vec_float4 comps(const uint8_t *p, const PlanAttr *pa)
+{
+    const vec_uchar16 q = ldu(p);
+    vec_float4 f;
+    switch (pa->fmt) {
+    case SVF_F32: f = (vec_float4)q; break;
+    case SVF_S16: f = spu_convtf(spu_rlmaska((vec_int4)spu_shuffle(q, q, k_s16), -16), 0); break;
+    case SVF_U16: f = spu_convtf((vec_uint4)spu_shuffle(q, q, k_u16), 0); break;
+    case SVF_S8:  f = spu_convtf(spu_rlmaska((vec_int4)spu_shuffle(q, q, k_s8), -24), 0); break;
+    default:      f = spu_convtf((vec_uint4)spu_shuffle(q, q, k_u8), 0); break;
+    }
+    if (pa->fmt != SVF_F32)
+        f = spu_mul(f, pa->scale);
+    return (vec_float4)spu_and((vec_uint4)f, pa->keep);
+}
+
+static inline uint32_t color_rgba8(const uint8_t *p, unsigned fmt)
+{
+    if (fmt == SVC_RGBA8 || fmt == SVC_RGBX8) {
+        uint32_t v = spu_extract((vec_uint4)ldu(p), 0);
+        return fmt == SVC_RGBX8 ? (v | 0xFFu) : v;
+    }
+    if (fmt == SVC_RGB8)
+        return spu_extract((vec_uint4)spu_shuffle(ldu(p), ldu(p), k_rgb), 0);
+    {
+        float c[4];
+        uint32_t packed = 0;
+        unsigned k;
+        col_decode(p, fmt, c);
+        for (k = 0; k < 4; k++) {
+            float v = c[k] * 255.0f + 0.5f;
+            packed = (packed << 8) | (v <= 0.0f ? 0u : v >= 255.0f ? 255u : (uint32_t)v);
+        }
+        return packed;
+    }
+}
+
+/* Skinning matrices, transposed on first use in a job: columns let a vertex
+ * be three multiply-adds instead of three dot products. */
+static vec_float4 skin_pos_cols[64][4];
+static vec_float4 skin_nrm_cols[32][3];
+static uint8_t    skin_pos_ok[64], skin_nrm_ok[32];
+
+static const vec_uchar16 k_col0 = {0,1,2,3, 16,17,18,19, 0x80,0x80,0x80,0x80, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_col1 = {4,5,6,7, 20,21,22,23, 0x80,0x80,0x80,0x80, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_col2 = {8,9,10,11, 24,25,26,27, 0x80,0x80,0x80,0x80, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_col3 = {12,13,14,15, 28,29,30,31, 0x80,0x80,0x80,0x80, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_put2_0 = {0,1,2,3, 4,5,6,7, 16,17,18,19, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_put2_1 = {0,1,2,3, 4,5,6,7, 20,21,22,23, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_put2_2 = {0,1,2,3, 4,5,6,7, 24,25,26,27, 0x80,0x80,0x80,0x80};
+static const vec_uchar16 k_put2_3 = {0,1,2,3, 4,5,6,7, 28,29,30,31, 0x80,0x80,0x80,0x80};
+
+static void transpose3(vec_float4 r0, vec_float4 r1, vec_float4 r2, vec_float4 *c, unsigned ncols)
+{
+    c[0] = spu_shuffle(spu_shuffle(r0, r1, k_col0), r2, k_put2_0);
+    c[1] = spu_shuffle(spu_shuffle(r0, r1, k_col1), r2, k_put2_1);
+    c[2] = spu_shuffle(spu_shuffle(r0, r1, k_col2), r2, k_put2_2);
+    if (ncols > 3)
+        c[3] = spu_shuffle(spu_shuffle(r0, r1, k_col3), r2, k_put2_3);
+}
+
+static inline vec_float4 skin_pos(vec_float4 p, unsigned idx)
+{
+    vec_float4 *c = skin_pos_cols[idx];
+    if (!skin_pos_ok[idx]) {
+        const vec_float4 *r = (const vec_float4 *)(skin_buf + idx * 4u);
+        transpose3(r[0], r[1], r[2], c, 4);
+        skin_pos_ok[idx] = 1;
+    }
+    return spu_madd(c[2], spu_splats(spu_extract(p, 2)),
+           spu_madd(c[1], spu_splats(spu_extract(p, 1)),
+           spu_madd(c[0], spu_splats(spu_extract(p, 0)), c[3])));
+}
+
+static inline vec_float4 skin_nrm(vec_float4 n, unsigned idx)
+{
+    vec_float4 *c = skin_nrm_cols[idx];
+    if (!skin_nrm_ok[idx]) {
+        const uint8_t *b = (const uint8_t *)(skin_buf + 0x400u + 3u * idx);
+        transpose3((vec_float4)ldu(b), (vec_float4)ldu(b + 12), (vec_float4)ldu(b + 24), c, 3);
+        skin_nrm_ok[idx] = 1;
+    }
+    return spu_madd(c[2], spu_splats(spu_extract(n, 2)),
+           spu_madd(c[1], spu_splats(spu_extract(n, 1)),
+                    spu_mul(c[0], spu_splats(spu_extract(n, 0)))));
+}
+
+/* Returns 0 when a job needs the scalar path. */
+static int plan_job(const SpuVtxJob *j)
+{
+    static const uint32_t keep_n[4][4] = {
+        {0, 0, 0, 0}, {~0u, 0, 0, 0}, {~0u, ~0u, 0, 0}, {~0u, ~0u, ~0u, 0}};
+    uint32_t off = 0;
+    unsigned a;
+    plan_n = 0;
+    for (a = 0; a < j->nattrs; a++) {
+        const SpuVtxAttr *at = &j->attr[a];
+        PlanAttr *pa = &plan[plan_n];
+        unsigned n;
+        if (at->kind == SVA_END)
+            break;
+        if (gather[a])
+            return 0;
+        pa->kind = at->kind; pa->mode = at->mode; pa->fmt = at->fmt;
+        pa->count = at->count; pa->soff = (uint16_t)off; pa->stride = at->stride;
+        n = at->count > 3u ? 3u : at->count;
+        if (at->kind >= SVA_TEX0 && n > 2u)
+            n = 2u;
+        pa->keep = *(const vec_uint4 *)keep_n[n];
+        pa->scale = spu_splats(frac_scale(at->frac));
+        pa->base = window_buf + window_off[a] - (uint32_t)local_base[a] * at->stride;
+        if (at->kind == SVA_PNMTXIDX || at->kind == SVA_TEXMTXIDX)
+            off += 1;
+        else if (at->mode != SVM_DIRECT)
+            off += at->mode == SVM_IDX8 ? 1u : 2u;
+        else if (at->kind == SVA_COL0 || at->kind == SVA_COL1)
+            off += col_bytes(at->fmt);
+        else
+            off += (uint32_t)at->count * fmt_bytes(at->fmt);
+        plan_n++;
+    }
+    for (a = 0; a < 64; a++) skin_pos_ok[a] = 0;
+    for (a = 0; a < 32; a++) skin_nrm_ok[a] = 0;
+    return 1;
+}
+
+static void decode_vertex_fast(const uint8_t *vp, vec_float4 *out, int skinning)
+{
+    vec_float4 pos = spu_splats(0.0f), nrm = {0.0f, 0.0f, 1.0f, 0.0f};
+    vec_float4 tex[4];
+    uint32_t col = 0xFFFFFFFFu;
+    unsigned a, pidx = 0;
+    int have_idx = 0, have_nrm = 0;
+    tex[0] = tex[1] = tex[2] = tex[3] = spu_splats(0.0f);
+
+    for (a = 0; a < plan_n; a++) {
+        const PlanAttr *pa = &plan[a];
+        const uint8_t *src = vp + pa->soff;
+        if (pa->kind == SVA_PNMTXIDX) {
+            if (skinning) { pidx = *src & 0x3Fu; have_idx = 1; }
+            continue;
+        }
+        if (pa->kind == SVA_TEXMTXIDX)
+            continue;
+        if (pa->mode != SVM_DIRECT) {
+            uint32_t idx = pa->mode == SVM_IDX8 ? src[0] : ((uint32_t)src[0] << 8 | src[1]);
+            src = pa->base + idx * pa->stride;
+        }
+        switch (pa->kind) {
+        case SVA_POS: pos = comps(src, pa); break;
+        case SVA_NRM: nrm = comps(src, pa); have_nrm = 1; break;
+        case SVA_COL0: col = color_rgba8(src, pa->fmt); break;
+        case SVA_COL1: break;
+        default:
+            if (pa->kind - SVA_TEX0 < 4u)
+                tex[pa->kind - SVA_TEX0] = comps(src, pa);
+            break;
+        }
+    }
+    if (have_idx) {
+        pos = skin_pos(pos, pidx);
+        if (have_nrm)
+            nrm = skin_nrm(nrm, pidx & 31u);
+    }
+    {
+        union { uint32_t u; float f; } cv;
+        cv.u = col;
+        out[0] = spu_insert(cv.f, pos, 3);
+    }
+    out[1] = spu_insert(0.0f, nrm, 3);
+    out[2] = spu_shuffle(tex[0], tex[1], k_tex2);
+    out[3] = spu_shuffle(tex[2], tex[3], k_tex2);
+}
+
 static void run_job(const SpuVtxJob *j)
 {
     const int run = (j->flags & SPU_JOB_RUN) != 0;
@@ -562,6 +780,7 @@ static void run_job(const SpuVtxJob *j)
          * whole number of vertex PAIRS (spu_vtx_reserve: 176 bytes each), so
          * rounding the last length up to 16 bytes stays inside it. */
         const int skinning = j->skin_ea != 0;
+        const int fast = plan_job(j);
         uint32_t done = 0, chunk = 0, nidx = 0, v;
         float *ov = out_buf;
         prim_walk_init(&w, j, stream_buf + stream_skew);
@@ -574,7 +793,10 @@ static void run_job(const SpuVtxJob *j)
             if (run)
                 nidx = emit_indices(ps.op, j->idx_first + done, ps.n, nidx);
             for (v = 0; v < ps.n; v++) {
-                decode_vertex(j, ps.vp + v * j->vert_size, ov, skinning);
+                if (fast)
+                    decode_vertex_fast(ps.vp + v * j->vert_size, (vec_float4 *)ov, skinning);
+                else
+                    decode_vertex(j, ps.vp + v * j->vert_size, ov, skinning);
                 ov += SPU_RV_FLOATS;
                 done++;
                 if (++chunk == SPU_VTX_MAX_VERTS) {

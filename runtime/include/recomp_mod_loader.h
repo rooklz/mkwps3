@@ -25,6 +25,14 @@ struct MemoryReservation {
 // un-inlinable calls plus a register spill each for three instructions of work.
 inline thread_local uint32_t g_currentTranslatedExecutionAddress = 0;
 
+// Translated code marks the function it is executing -- on entry, and again
+// after each call it makes returns -- so a sampler on another thread sees
+// exactly where the guest is. One store to a thread-local each.
+#define MKW_FN_MARK(address) (::RecompMod::g_currentTranslatedExecutionAddress = (address))
+// Function entries, counted for the control port's stats (calls per frame).
+inline thread_local uint32_t g_translatedEntries = 0;
+#define MKW_FN_ENTER(address) (MKW_FN_MARK(address), ++::RecompMod::g_translatedEntries)
+
 class ScopedTranslatedExecutionAddress {
 public:
     explicit ScopedTranslatedExecutionAddress(uint32_t address) noexcept

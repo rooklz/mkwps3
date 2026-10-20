@@ -362,6 +362,22 @@ static s32 rsx_ring_wrap_fenced(gcmContextData *c, u32 count)
     return s_ring_cb_prev ? call_prev_ring_callback(c, count) : -1;
 }
 
+/* Room for `words` command words in the current segment, through the same
+ * fenced wrap every PSL1GHT command takes. For writers that fill the words
+ * themselves (vector stores of constant rows). */
+u32 *rsx_cmd_reserve(u32 words)
+{
+    gcmContextData *c = s_ctx;
+    u32 *p;
+    if (!c)
+        return NULL;
+    if (c->current + words > c->end && rsx_ring_wrap_fenced(c, words) != 0)
+        return NULL;
+    p = c->current;
+    c->current += words;
+    return p;
+}
+
 /* How close the command ring is to wrapping.
  *
  * The wrap flush is the one the renderer does not initiate: PSL1GHT's handler

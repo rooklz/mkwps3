@@ -354,6 +354,7 @@ public sealed partial class CxxLinearCodeGenerator
                         // case is excluded above); it still owns the f1
                         // representation tag every guest call boundary applies.
                         EmitNormalizeGuestCallFloatReturn(call.Target, sb, pad, localPaired, guestAbiProvider);
+                        AppendFunctionMark(sb, pad);
                         break;
                     }
                     var boundarySync = usesStateFreeCall || argumentNormalization.Length != 0
@@ -390,11 +391,13 @@ public sealed partial class CxxLinearCodeGenerator
                         RecordEmittedDirectCallTarget(addr);
                         sb.AppendLine($"{pad}    InvokeDirectCpu<0x{addr:X8}u>(ctx);");
                         sb.AppendLine($"{pad}}}");
+                        AppendFunctionMark(sb, pad);
                     }
                     else
                     {
                         RecordEmittedDirectCallTarget(addr);
                         sb.AppendLine($"{pad}InvokeDirectCpu<0x{addr:X8}u>(ctx);");
+                        AppendFunctionMark(sb, pad);
                     }
                     if (resumesThroughLinkRegister)
                     {
@@ -501,6 +504,7 @@ public sealed partial class CxxLinearCodeGenerator
                     var indirectTarget = ToExpression(icall.Target, types);
                     AppendFlush(sb, pad);
                     sb.AppendLine($"{pad}InvokeIndirectCpu({indirectTarget}, ctx);");
+                    AppendFunctionMark(sb, pad);
                     AppendReload(sb, pad);
                     // f1 is the conventional scalar floating-point return.
                     // Do not retag the other volatile FPRs: a callee that leaves

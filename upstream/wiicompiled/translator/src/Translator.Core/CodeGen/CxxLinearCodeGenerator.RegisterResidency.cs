@@ -257,6 +257,22 @@ public sealed partial class CxxLinearCodeGenerator
             FlushesXer: true,
             ReloadsXer: false);
 
+        /// <summary>
+        /// A return under <see cref="Translator.Core.Analysis.GuestEabiVisibility"/>: only the registers a
+        /// caller can observe after the call are published. CR goes back whole (fields 2-4 live in it).
+        /// </summary>
+        public static ResidencyBoundarySync EabiReturn { get; } = new(
+            FlushGprMask: Translator.Core.Analysis.GuestEabiVisibility.VisibleGpr,
+            FlushFprMask: Translator.Core.Analysis.GuestEabiVisibility.VisibleFpr,
+            FlushesCr: true,
+            FlushesCtr: false,
+            ReloadGprMask: 0u,
+            ReloadFprMask: 0u,
+            ReloadsCr: false,
+            ReloadsCtr: false,
+            FlushesXer: false,
+            ReloadsXer: false);
+
         public bool FlushesGpr(int index) => (FlushGprMask & (1u << index)) != 0;
         public bool FlushesFpr(int index) => (FlushFprMask & (1u << index)) != 0;
         public bool ReloadsGpr(int index) => (ReloadGprMask & (1u << index)) != 0;

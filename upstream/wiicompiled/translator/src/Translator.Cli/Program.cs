@@ -860,7 +860,8 @@ int RunTranslateRecursive(string[] argsTail)
                 if (!canonicalIrStore.TryGet(address, out var canonicalSsa))
                     throw new InvalidOperationException($"Missing canonical SSA while building ABI contract for 0x{address:X8}.");
                 canonicalByIndex[i] = canonicalSsa;
-                localContractByIndex[i] = GuestAbiContractAnalyzer.Analyze(canonicalSsa);
+                localContractByIndex[i] = GuestEabiVisibility.Apply(
+                    address, GuestAbiContractAnalyzer.Analyze(canonicalSsa));
                 irInstructionCountByIndex[i] = canonicalSsa.Blocks.Sum(block => block.Instructions.Count);
             });
             for (var i = 0; i < emissionAddresses.Length; i++)
@@ -1171,6 +1172,7 @@ int RunTranslateRecursive(string[] argsTail)
                 .Where(static pair => pair.Value == 0)
                 .Select(static pair => pair.Key));
             var processedComponents = 0;
+            var stateFreeDemoted = 0;
             while (readyComponents.Count != 0)
             {
                 var componentIndex = readyComponents.Min;
@@ -1189,7 +1191,25 @@ int RunTranslateRecursive(string[] argsTail)
                     changed = false;
                     foreach (var address in members)
                     {
-                        var refined = RefineStateFreeContract(address);
+                        if (!stateFreeAbiFunctions.Contains(address)) continue;
+                        GuestAbiContract refined;
+                        try
+                        {
+                            refined = RefineStateFreeContract(address);
+                        }
+                        catch (InvalidOperationException ex) when (
+                            ex.Message.StartsWith("State-free ABI at", StringComparison.Ordinal) ||
+                            ex.Message.StartsWith("Missing state-free ABI metadata", StringComparison.Ordinal))
+                        {
+                            // The body cannot be expressed without CpuContext after all (a
+                            // callee that is not state-free, a register it cannot carry). Keep
+                            // it on the CpuContext ABI; callers are refined after it and see that.
+                            stateFreeAbiFunctions.Remove(address);
+                            stateFreeAbiContracts.Remove(address);
+                            ++stateFreeDemoted;
+                            changed = true;
+                            continue;
+                        }
                         if (stateFreeAbiContracts[address] == refined) continue;
                         stateFreeAbiContracts[address] = refined;
                         changed = true;
@@ -1202,6 +1222,10 @@ int RunTranslateRecursive(string[] argsTail)
             }
             if (processedComponents != eligibleComponents.Count)
                 throw new InvalidOperationException("State-free component graph was not acyclic after SCC condensation.");
+            if (stateFreeDemoted != 0)
+                Console.WriteLine(
+                    $"[translator] State-free ABI: {stateFreeDemoted:N0} function(s) kept on CpuContext, " +
+                    $"{stateFreeAbiFunctions.Count:N0} state-free.");
 
             // A single union signature recreates CpuContext traffic as Win x64 stack args/hidden
             // struct-return. Materialize compact variants instead; the four-input/two-output cap
