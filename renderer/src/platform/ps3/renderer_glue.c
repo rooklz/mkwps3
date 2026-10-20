@@ -202,13 +202,13 @@ int mkw_renderer_stats(char *out, unsigned cap)
 {
     extern u64 g_spu_jobs, g_spu_fallbacks, g_spu_too_big, g_spu_skin_copies, g_spu_skin_reuses;
     extern u64 g_run_draws, g_run_prims, g_run_splits, g_run_fallbacks, g_run_calls, g_run_singly;
-    extern u64 g_spu_arena_waits, g_spu_arena_fails;
+    extern u64 g_spu_arena_waits, g_spu_arena_fails, g_ring_wraps;
     char line[256];
     int n;
     gx_render_stats_line(line, sizeof line);
     n = snprintf(out, cap, "spu jobs=%llu fallbacks=%llu toobig=%llu skin copies=%llu reuses=%llu\n"
                  "runs draws=%llu prims=%llu splits=%llu fallbacks=%llu calls=%llu singly=%llu dropped=%llu "
-                 "prof depth=%d top=%d arena waits=%llu fails=%llu\n",
+                 "prof depth=%d top=%d arena waits=%llu fails=%llu ring wraps=%llu\n",
                  (unsigned long long)g_spu_jobs, (unsigned long long)g_spu_fallbacks,
                  (unsigned long long)g_spu_too_big, (unsigned long long)g_spu_skin_copies,
                  (unsigned long long)g_spu_skin_reuses, (unsigned long long)g_run_draws,
@@ -216,7 +216,8 @@ int mkw_renderer_stats(char *out, unsigned cap)
                  (unsigned long long)g_run_fallbacks, (unsigned long long)g_run_calls,
                  (unsigned long long)g_run_singly, (unsigned long long)gx_state()->draws_dropped,
                  g_prof.depth, g_prof.stack[g_prof.depth < PROF_STACK_MAX ? g_prof.depth : 0],
-                 (unsigned long long)g_spu_arena_waits, (unsigned long long)g_spu_arena_fails);
+                 (unsigned long long)g_spu_arena_waits, (unsigned long long)g_spu_arena_fails,
+                 (unsigned long long)g_ring_wraps);
     if (n < 0 || (unsigned)n >= cap)
         return n;
     out += n;

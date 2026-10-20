@@ -127,14 +127,20 @@ typedef struct {
     uint32_t stream_bytes;           /* RUN: command bytes at stream_ea       */
     uint16_t prims;                  /* RUN: primitive commands in them       */
     uint16_t nidx;                   /* RUN: indices the PPU expects          */
-} SpuVtxJob;                         /* 312 + 16 = 328 */
+    uint32_t idx_first;              /* RUN: index of this job's first vertex
+                                      * within the draw (a run is split
+                                      * across consumers)                     */
+    uint32_t pad_run;
+} SpuVtxJob;                         /* 312 + 24 = 336 */
 
 typedef struct {
     SpuVtxJob job;
-    uint8_t   pad[384 - 328];
+    uint8_t   pad[384 - 336];
 } SpuVtxJobSlot;                     /* 384 = 3 whole 128-byte lines */
 
-#define SPU_RV_FLOATS 22
-#define SPU_RV_BYTES  88
+/* One RenderVertex (gx_render.c): pos f32[3], col u8[4], nrm f32[3], pad,
+ * tex f32[4][2]. Sixteen words. */
+#define SPU_RV_FLOATS 16
+#define SPU_RV_BYTES  64
 
 #endif

@@ -322,8 +322,8 @@ void spu_vtx_join(void)
 
 u8 *spu_vtx_reserve(u32 count, u32 *io_off_out)
 {
-    /* Whole PAIRS of vertices, not whole cache lines. Two 88-byte vertices
-     * are 176 bytes, a multiple of 16, so every reservation stays DMA-aligned
+    /* Whole PAIRS of vertices, not whole cache lines. Two 64-byte vertices
+     * are 128 bytes, a multiple of 16, so every reservation stays DMA-aligned
      * -- and every offset in the arena is a whole number of vertices from
      * every other, which is what lets the renderer join consecutive draws
      * into one indexed batch over vertices from several jobs. (Line rounding

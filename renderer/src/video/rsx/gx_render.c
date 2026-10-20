@@ -1620,23 +1620,25 @@ static void texcache_bind(gcmContextData *c, unsigned unit, const BPTexture *t,
  * and kart materials read off the disc, 167 texgens take the *normal* as their
  * source row (that is what an environment map is), and 70 materials configure
  * more than two coordinates. Four rather than GX's eight because no material in
- * six courses and two karts asks for more than four, and each unused coordinate
- * is twelve bytes of vertex bandwidth on every vertex of every draw.
+ * six courses and two karts asks for more than four.
  *
- * The arena grows with the vertex so the *number* of vertices a frame can hold
- * does not shrink: it is the same 80k vertices it was at 52 bytes each. */
+ * 64 bytes, down from 88: the colour is RGBA8 (GX colours are 8-bit or less
+ * per channel; the RSX normalises them back to 0..1) and a texture coordinate
+ * is (s, t) only. Its third texgen input is always 1, so the vertex programs
+ * supply it (xf_program.c, emit_texgen) instead of every vertex carrying it.
+ * A race frame is ~90k vertices, so this is ~2 MB a frame less to write from
+ * the SPUs, to hold in the arena and for the RSX to fetch. Two vertices are
+ * 128 bytes, so a vertex pair stays a whole number of 16-byte DMA units. */
 typedef struct {
     f32 pos[3];
+    u8  col[4];
     f32 nrm[3];
-    f32 col[4];
-    /* Three components: GX texgen input for an ST coordinate is (s, t, 1) --
-     * the third component multiplies the matrix's translation column. Sending
-     * (s, t, 0) dropped every atlas offset, which showed as glyphs clipped at
-     * their right edges: the sub-rectangle translation never applied. */
-    f32 tex[4][3];
+    u32 pad;
+    f32 tex[4][2];
 } RenderVertex;
 
 #define RENDER_VERTEX_TEXCOORDS 4
+_Static_assert(sizeof(RenderVertex) == SPU_RV_BYTES, "the SPU writes this layout");
 
 #define ATTR_POS  0
 #define ATTR_NRM  2
@@ -2957,13 +2959,15 @@ static int ppu_decode_vertices(const GXState *g, unsigned vat, u32 addr,
             out[i].nrm[2] = nz;
         }
 
+        out[i].pad = 0;
         if (a.color_present[0]) {
-            out[i].col[0] = a.color[0][0];
-            out[i].col[1] = a.color[0][1];
-            out[i].col[2] = a.color[0][2];
-            out[i].col[3] = a.color[0][3];
+            unsigned ch;
+            for (ch = 0; ch < 4; ch++) {
+                f32 v = a.color[0][ch] * 255.0f + 0.5f;
+                out[i].col[ch] = (u8)(v <= 0.0f ? 0 : v >= 255.0f ? 255 : (int)v);
+            }
         } else {
-            out[i].col[0] = out[i].col[1] = out[i].col[2] = out[i].col[3] = 1.0f;
+            out[i].col[0] = out[i].col[1] = out[i].col[2] = out[i].col[3] = 255;
         }
 
         for (t = 0; t < RENDER_VERTEX_TEXCOORDS; t++) {
@@ -2974,7 +2978,6 @@ static int ppu_decode_vertices(const GXState *g, unsigned vat, u32 addr,
             } else {
                 out[i].tex[t][0] = out[i].tex[t][1] = 0.0f;
             }
-            out[i].tex[t][2] = 1.0f;    /* texgen's implicit third input */
         }
     }
     return 0;
@@ -4050,12 +4053,12 @@ decode_done:
             rsxBindVertexArrayAttrib(c, ATTR_COL, 0,
                                      (u32)offsetof(RenderVertex, col),
                                      sizeof(RenderVertex), 4,
-                                     GCM_VERTEX_DATA_TYPE_F32, loc);
+                                     GCM_VERTEX_DATA_TYPE_U8, loc);
             for (n3 = 0; n3 < RENDER_VERTEX_TEXCOORDS; n3++)
                 rsxBindVertexArrayAttrib(c, ATTR_TEX(n3), 0,
                                          (u32)offsetof(RenderVertex, tex) +
                                          (u32)(n3 * sizeof ((RenderVertex *)0)->tex[0]),
-                                         sizeof(RenderVertex), 3,
+                                         sizeof(RenderVertex), 2,
                                          GCM_VERTEX_DATA_TYPE_F32, loc);
             s_vb_loc = loc;
             s_vb_epoch = s_const_epoch;
@@ -4116,6 +4119,19 @@ static void run_singly(void *ctx, const GXState *g, unsigned vat, u32 cmd_addr,
     }
 }
 
+/* A run is decoded as several jobs, about RUN_CHUNK_VERTS vertices each, so
+ * the consumers share it: the jobs land on consecutive ring slots and so on
+ * different SPUs. One job per run put a whole shape on one SPU, and every
+ * command-buffer segment wrap then waited for the slowest of them.
+ *
+ * Chunks are cut at primitive boundaries. Each one's vertices start on an
+ * even vertex (the SPU rounds its put to 16 bytes, 88-byte vertices are
+ * 16-aligned in pairs) and its indices on a multiple of 24 (16-byte aligned
+ * and whole triangles), padded with degenerate triangles; the gaps are never
+ * referenced. */
+#define RUN_CHUNK_VERTS 256u
+#define RUN_MAX_CHUNKS  48u
+
 static void run_issue(void *ctx, const GXState *g, unsigned vat, u32 cmd_addr,
                       u32 cmd_bytes, u32 prims, u32 verts, u32 nidx, u32 vsize)
 {
@@ -4129,37 +4145,77 @@ static void run_issue(void *ctx, const GXState *g, unsigned vat, u32 cmd_addr,
                                      unsigned verts, unsigned nidx, u64 dest_ea,
                                      u64 idx_ea, SpuVtxJob *job);
     extern u32 g_xf_generation;
+    struct { u32 pos, end, prims, verts, nidx; } ch[RUN_MAX_CHUNKS];
     SpuVtxJob job;
-    u32 io_off, idx_off, pos = 0, n;
-    u8 *dst, *idx, op;
-    int ok;
+    u32 io_off, idx_off, pos = 0, n, nch = 0, vtot = 0, itot = 0, vfirst, ifirst, k;
+    u64 skin = 0;
+    u8 *dst, *idx, op, first_op = 0;
+    u32 first_pos = 0;
 
-    if (prims < 2 || nidx == 0 ||
-        !run_next(cmd_addr, cmd_bytes, vsize, &pos, &op, &n))
+    (void)verts; (void)nidx;
+    if (prims < 2)
         goto singly;
-    dst = spu_vtx_reserve(verts, &io_off);
-    idx = dst ? spu_vtx_reserve_idx(nidx, &idx_off) : NULL;
+    while (run_next(cmd_addr, cmd_bytes, vsize, &pos, &op, &n)) {
+        if (nch == 0) { first_op = op; first_pos = pos; }
+        if (nch == 0 || (ch[nch - 1].verts && ch[nch - 1].verts + n > RUN_CHUNK_VERTS)) {
+            if (nch == RUN_MAX_CHUNKS)
+                goto singly;
+            ch[nch].pos = pos;
+            ch[nch].prims = ch[nch].verts = ch[nch].nidx = 0;
+            nch++;
+        }
+        ch[nch - 1].prims++;
+        ch[nch - 1].verts += n;
+        ch[nch - 1].nidx  += batch_index_count((GXPrimitive)(op & 0xF8u), n);
+        pos += 3u + n * vsize;
+        ch[nch - 1].end = pos;
+    }
+    for (k = 0; k < nch; k++) {
+        vtot += (ch[k].verts + 1u) & ~1u;
+        itot += (ch[k].nidx + 23u) / 24u * 24u;
+    }
+    if (!nch || itot == 0 || vtot > 0xFFFFu)
+        goto singly;
+    dst = spu_vtx_reserve(vtot, &io_off);
+    idx = dst ? spu_vtx_reserve_idx(itot, &idx_off) : NULL;
     if (!idx)
         goto singly;
     prof_enter(PH_SPUJOB);
-    ok = vtx_build_spu_run_job(&g->parser.cp, vat, cmd_addr + pos + 3u, cmd_addr,
-                               cmd_bytes, prims, verts, nidx,
-                               (u64)(uintptr_t)dst, (u64)(uintptr_t)idx,
-                               &job) == 0;
-    if (ok && (g->parser.cp.vcd_lo & 1u)) {
-        job.skin_ea = spu_vtx_skin_store(g->xf.mem, SPU_SKIN_BYTES, g_xf_generation);
-        ok = job.skin_ea != 0;
+    if (g->parser.cp.vcd_lo & 1u) {
+        skin = spu_vtx_skin_store(g->xf.mem, SPU_SKIN_BYTES, g_xf_generation);
+        if (!skin) { prof_exit(); goto singly; }
+    }
+    vfirst = ifirst = 0;
+    for (k = 0; k < nch; k++) {
+        const u32 cn = (ch[k].nidx + 23u) / 24u * 24u;
+        if (ch[k].verts) {
+            if (vtx_build_spu_run_job(&g->parser.cp, vat, cmd_addr + ch[k].pos + 3u,
+                                      cmd_addr + ch[k].pos, ch[k].end - ch[k].pos,
+                                      ch[k].prims, ch[k].verts, cn,
+                                      (u64)(uintptr_t)(dst + (size_t)vfirst * SPU_RV_BYTES),
+                                      (u64)(uintptr_t)(idx + (size_t)ifirst * 2u),
+                                      &job) != 0) {
+                prof_exit();
+                goto singly;   /* the jobs already sent only fill unused space */
+            }
+            job.idx_first = vfirst;
+            job.skin_ea = skin;
+            if (spu_vtx_submit(&job) != 0) {
+                prof_exit();
+                goto singly;
+            }
+        }
+        vfirst += (ch[k].verts + 1u) & ~1u;
+        ifirst += cn;
     }
     prof_exit();
-    if (!ok || spu_vtx_submit(&job) != 0)
-        goto singly;
     s_run.active  = 1;
     s_run.io_off  = io_off;
     s_run.idx_off = idx_off;
-    s_run.nidx    = nidx;
+    s_run.nidx    = itot;
     g_run_prims  += prims;
-    on_draw(ctx, g, (GXPrimitive)(op & 0xF8u), vat, (u16)verts,
-            cmd_addr + pos + 3u, vsize);
+    on_draw(ctx, g, (GXPrimitive)(first_op & 0xF8u), vat, (u16)vtot,
+            cmd_addr + first_pos + 3u, vsize);
     s_run.active  = 0;
     return;
 singly:

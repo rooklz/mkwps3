@@ -482,6 +482,7 @@ int vtx_build_spu_run_job(const GXCPRegs *cp, unsigned vat, u32 first_vertex,
     job->stream_bytes = cmd_bytes;
     job->prims        = (u16)prims;
     job->nidx         = (u16)nidx;
+    job->idx_first    = 0;
     return 0;
 }
 

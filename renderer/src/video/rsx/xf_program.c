@@ -473,7 +473,11 @@ static void emit_texgen(VPEmitter *e, const GXState *g, unsigned n,
     /* w = 1 always; z = 1 for the AB11 input form. The third component is what
      * multiplies a texture matrix's translation column, so forcing it to 1 is
      * exactly what makes an atlas sub-rectangle offset apply. */
-    emit_set_one(e, XR_COORD, VP_MASK_W | (TG_INPUTFORM(info) ? 0u : VP_MASK_Z));
+    /* A texture-coordinate source arrives as (s, t) only (gx_render.c,
+     * RenderVertex): its third input is 1 in either form. */
+    emit_set_one(e, XR_COORD, VP_MASK_W |
+                 ((TG_INPUTFORM(info) && srcrow != 0 && srcrow != 1) ? VP_MASK_Z :
+                  TG_INPUTFORM(info) ? 0u : VP_MASK_Z));
 
     (void)uses_posmtx;
 

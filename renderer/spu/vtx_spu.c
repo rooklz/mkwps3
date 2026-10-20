@@ -154,7 +154,7 @@ static void publish_stats(void)
     w[1] = st_jobs; w[2] = st_poll; w[3] = st_work; w[4] = st_workdma;
     w[5] = st_total;
     w[6] = st_gather; w[7] = st_gjobs;
-    dma_put(stat_out, g_ring + SPU_OFF_HB, SPU_LINE, TAG_OUT);
+    dma_put(stat_out, g_ring + SPU_OFF_HB + g_id * SPU_LINE, SPU_LINE, TAG_OUT);
     dma_wait(TAG_OUT);
     /* Per-window, not cumulative: a running total divided by a running job
      * count is dominated by however long the SPU sat idle in a menu, which
@@ -266,13 +266,13 @@ static void skin_vertex(float *ov, unsigned idx, int have_nrm)
     ov[2] = m8*px + m9*py + m10*pz + m11;
     if (have_nrm) {
         unsigned n = 0x400u + 3u * (idx & 31u);
-        float nx = ov[3], ny = ov[4], nz = ov[5];
+        float nx = ov[4], ny = ov[5], nz = ov[6];
         float n0 = skin_f(n+0), n1 = skin_f(n+1), n2 = skin_f(n+2);
         float n3 = skin_f(n+3), n4 = skin_f(n+4), n5 = skin_f(n+5);
         float n6 = skin_f(n+6), n7 = skin_f(n+7), n8 = skin_f(n+8);
-        ov[3] = n0*nx + n1*ny + n2*nz;
-        ov[4] = n3*nx + n4*ny + n5*nz;
-        ov[5] = n6*nx + n7*ny + n8*nz;
+        ov[4] = n0*nx + n1*ny + n2*nz;
+        ov[5] = n3*nx + n4*ny + n5*nz;
+        ov[6] = n6*nx + n7*ny + n8*nz;
     }
 }
 
@@ -406,9 +406,10 @@ static void decode_vertex(const SpuVtxJob *j, const uint8_t *vp, float *ov, int 
     unsigned pidx = 0;
     int have_idx = 0, have_nrm = 0;
     ov[0]=ov[1]=ov[2]=0.0f;
-    ov[3]=0.0f; ov[4]=0.0f; ov[5]=1.0f;
-    ov[6]=ov[7]=ov[8]=ov[9]=1.0f;
-    for (t=0;t<4;t++){ ov[10+t*3]=0.0f; ov[11+t*3]=0.0f; ov[12+t*3]=1.0f; }
+    ((uint32_t *)ov)[3] = 0xFFFFFFFFu;              /* RGBA8 white */
+    ov[4]=0.0f; ov[5]=0.0f; ov[6]=1.0f;
+    ((uint32_t *)ov)[7] = 0;
+    for (t=0;t<8;t++) ov[8+t]=0.0f;
 
     for (a = 0; a < j->nattrs; a++) {
         const SpuVtxAttr *at = &j->attr[a];
@@ -452,13 +453,22 @@ static void decode_vertex(const SpuVtxJob *j, const uint8_t *vp, float *ov, int 
             unsigned i, n = at->count;
             have_nrm = 1;
             for (i = 0; i < 3u && i < n; i++)
-                ov[3+i] = dequant(src, at->fmt, at->frac, i);
+                ov[4+i] = dequant(src, at->fmt, at->frac, i);
             if (at->mode == SVM_DIRECT) sp += n * fmt_bytes(at->fmt);
             break; }
-        case SVA_COL0:
-            col_decode(src, at->fmt, &ov[6]);
+        case SVA_COL0: {
+            float c[4];
+            unsigned k;
+            uint32_t packed = 0;
+            col_decode(src, at->fmt, c);
+            for (k = 0; k < 4; k++) {
+                float v = c[k] * 255.0f + 0.5f;
+                uint32_t b = v <= 0.0f ? 0u : v >= 255.0f ? 255u : (uint32_t)v;
+                packed = (packed << 8) | b;
+            }
+            ((uint32_t *)ov)[3] = packed;
             if (at->mode == SVM_DIRECT) sp += col_bytes(at->fmt);
-            break;
+            break; }
         case SVA_COL1:
             if (at->mode == SVM_DIRECT) sp += col_bytes(at->fmt);
             break;
@@ -467,7 +477,7 @@ static void decode_vertex(const SpuVtxJob *j, const uint8_t *vp, float *ov, int 
             unsigned tn = at->kind - SVA_TEX0;
             if (tn < 4u)
                 for (i = 0; i < n && i < 2u; i++)
-                    ov[10 + tn*3 + i] = dequant(src, at->fmt, at->frac, i);
+                    ov[8 + tn*2 + i] = dequant(src, at->fmt, at->frac, i);
             if (at->mode == SVM_DIRECT) sp += n * fmt_bytes(at->fmt);
             break; }
         }
@@ -562,7 +572,7 @@ static void run_job(const SpuVtxJob *j)
             if (ps.n > (uint32_t)j->vert_count - done)
                 ps.n = (uint32_t)j->vert_count - done;
             if (run)
-                nidx = emit_indices(ps.op, done, ps.n, nidx);
+                nidx = emit_indices(ps.op, j->idx_first + done, ps.n, nidx);
             for (v = 0; v < ps.n; v++) {
                 decode_vertex(j, ps.vp + v * j->vert_size, ov, skinning);
                 ov += SPU_RV_FLOATS;
@@ -585,7 +595,7 @@ static void run_job(const SpuVtxJob *j)
             if (nidx > j->nidx)
                 nidx = j->nidx;             /* the reservation's size */
             while (nidx < j->nidx && nidx < SPU_RUN_MAX_IDX)
-                idx_buf[nidx++] = 0;
+                idx_buf[nidx++] = (uint16_t)j->idx_first;   /* degenerate */
             if (nidx)
                 dma_put(idx_buf, j->idx_ea, (nidx * 2u + 15u) & ~15u, TAG_OUT);
         }
