@@ -1,0 +1,119 @@
+// -*- C++ -*-
+// <thread> for the PS3 (libstdc++ without gthreads): std::thread on PPU
+// threads, std::this_thread on lv2 sleeps and yields.
+#pragma once
+#include_next <thread>
+
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <tuple>
+#include <utility>
+
+extern "C" {
+int mkw_lv2_thread_create(uint64_t* id, void (*entry)(void*), void* arg, int priority,
+                          uint64_t stack, const char* name);
+int mkw_lv2_thread_join(uint64_t id);
+void mkw_lv2_thread_exit(void);
+void mkw_lv2_thread_yield(void);
+uint64_t mkw_lv2_thread_self(void);
+void mkw_lv2_usleep(uint32_t us);
+}
+
+namespace std {
+
+namespace this_thread {
+
+inline void yield() noexcept { mkw_lv2_thread_yield(); }
+
+template <class Rep, class Period>
+inline void sleep_for(const chrono::duration<Rep, Period>& d)
+{
+    const auto us = chrono::duration_cast<chrono::microseconds>(d).count();
+    if (us > 0)
+        mkw_lv2_usleep(static_cast<uint32_t>(us > 0xFFFFFFFFLL ? 0xFFFFFFFFLL : us));
+    else
+        mkw_lv2_thread_yield();
+}
+
+template <class Clock, class Duration>
+inline void sleep_until(const chrono::time_point<Clock, Duration>& t)
+{
+    const auto now = Clock::now();
+    if (t > now)
+        sleep_for(t - now);
+}
+
+inline uint64_t get_id() noexcept
+{
+    return mkw_lv2_thread_self();
+}
+
+} // namespace this_thread
+
+class thread {
+public:
+    using id = uint64_t;
+    using native_handle_type = uint64_t;
+
+    thread() noexcept = default;
+
+    template <class F, class... Args>
+    explicit thread(F&& f, Args&&... args)
+    {
+        auto* call = new Invoker<typename decay<F>::type, typename decay<Args>::type...>(
+            std::forward<F>(f), std::forward<Args>(args)...);
+        if (mkw_lv2_thread_create(&id_, &Trampoline, call, 1500, 256 * 1024, "mkw_worker") != 0) {
+            delete call;
+            id_ = 0;
+        }
+    }
+
+    thread(thread&& other) noexcept : id_(other.id_) { other.id_ = 0; }
+    thread& operator=(thread&& other) noexcept
+    {
+        id_ = other.id_;
+        other.id_ = 0;
+        return *this;
+    }
+    thread(const thread&) = delete;
+    thread& operator=(const thread&) = delete;
+    ~thread() = default;
+
+    bool joinable() const noexcept { return id_ != 0; }
+    void join()
+    {
+        if (id_)
+            mkw_lv2_thread_join(id_);
+        id_ = 0;
+    }
+    void detach() { id_ = 0; }
+    id get_id() const noexcept { return id_; }
+    native_handle_type native_handle() const noexcept { return id_; }
+    static unsigned hardware_concurrency() noexcept { return 2; }
+
+private:
+    struct InvokerBase {
+        virtual ~InvokerBase() = default;
+        virtual void run() = 0;
+    };
+    template <class F, class... Args>
+    struct Invoker final : InvokerBase {
+        template <class FF, class... AA>
+        explicit Invoker(FF&& f, AA&&... a) : fn(std::forward<FF>(f)), args(std::forward<AA>(a)...) {}
+        void run() override { std::apply(fn, std::move(args)); }
+        F fn;
+        tuple<Args...> args;
+    };
+    static void Trampoline(void* p)
+    {
+        unique_ptr<InvokerBase> call(static_cast<InvokerBase*>(p));
+        call->run();
+        call.reset();
+        mkw_lv2_thread_exit();
+    }
+
+    uint64_t id_ = 0;
+};
+
+} // namespace std

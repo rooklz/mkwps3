@@ -1,0 +1,444 @@
+// -*- C++ -*-
+// The part of std::filesystem the runtime uses, on lv2's file system calls.
+// GCC 7's libstdc++ has no <filesystem>; paths on the PS3 are plain
+// "/dev_hdd0/..." strings, so path is a string with the usual decomposition.
+#pragma once
+
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <ostream>
+#include <system_error>
+#include <vector>
+#include <cstdio>
+
+// lv2 file system wrappers (compat_lv2.cpp); see <mutex> for why the SDK
+// headers are not included here.
+extern "C" {
+int mkw_fs_stat(const char* path, int* mode, uint64_t* size, int64_t* mtime);
+int mkw_fs_mkdir(const char* path);
+int mkw_fs_rmdir(const char* path);
+int mkw_fs_unlink(const char* path);
+int mkw_fs_rename(const char* from, const char* to);
+int mkw_fs_opendir(const char* path, int* fd);
+int mkw_fs_readdir(int fd, char* name, unsigned cap);   // 1 entry, 0 end, <0 error
+int mkw_fs_closedir(int fd);
+}
+
+namespace std {
+namespace filesystem {
+
+class path {
+public:
+    using value_type = char;
+    using string_type = std::string;
+    static constexpr char preferred_separator = '/';
+
+    path() = default;
+    path(const char* s) : s_(s ? s : "") {}
+    path(const std::string& s) : s_(s) {}
+    path(std::string&& s) : s_(std::move(s)) {}
+    template <class It>
+    path(It first, It last) : s_(first, last) {}
+
+    path& operator/=(const path& p)
+    {
+        if (p.s_.empty())
+            return *this;
+        if (!p.s_.empty() && p.s_[0] == '/') {
+            s_ = p.s_;
+            return *this;
+        }
+        if (!s_.empty() && s_.back() != '/')
+            s_ += '/';
+        s_ += p.s_;
+        return *this;
+    }
+    path& operator+=(const path& p) { s_ += p.s_; return *this; }
+    path& operator+=(const std::string& p) { s_ += p; return *this; }
+    path& operator+=(const char* p) { s_ += p; return *this; }
+    path& operator+=(char c) { s_ += c; return *this; }
+
+    const std::string& native() const noexcept { return s_; }
+    const char* c_str() const noexcept { return s_.c_str(); }
+    std::string string() const { return s_; }
+    std::string generic_string() const { return s_; }
+    std::string u8string() const { return s_; }
+    operator std::string() const { return s_; }
+    bool empty() const noexcept { return s_.empty(); }
+
+    path filename() const
+    {
+        const auto i = s_.find_last_of('/');
+        return i == std::string::npos ? *this : path(s_.substr(i + 1));
+    }
+    path parent_path() const
+    {
+        const auto i = s_.find_last_of('/');
+        if (i == std::string::npos)
+            return path();
+        if (i == 0)
+            return path("/");
+        return path(s_.substr(0, i));
+    }
+    path stem() const
+    {
+        const std::string f = filename().s_;
+        const auto i = f.find_last_of('.');
+        return (i == std::string::npos || i == 0) ? path(f) : path(f.substr(0, i));
+    }
+    path extension() const
+    {
+        const std::string f = filename().s_;
+        const auto i = f.find_last_of('.');
+        return (i == std::string::npos || i == 0) ? path() : path(f.substr(i));
+    }
+    bool has_filename() const { return !filename().empty(); }
+    bool has_extension() const { return !extension().empty(); }
+    bool has_parent_path() const { return !parent_path().empty(); }
+    bool is_absolute() const { return !s_.empty() && s_[0] == '/'; }
+    bool is_relative() const { return !is_absolute(); }
+    path& replace_extension(const path& e = path())
+    {
+        const std::string ext = extension().s_;
+        if (!ext.empty())
+            s_.erase(s_.size() - ext.size());
+        if (!e.s_.empty()) {
+            if (e.s_[0] != '.')
+                s_ += '.';
+            s_ += e.s_;
+        }
+        return *this;
+    }
+    path& replace_filename(const path& f)
+    {
+        *this = parent_path() / f;
+        return *this;
+    }
+    path& remove_filename()
+    {
+        const auto i = s_.find_last_of('/');
+        s_ = i == std::string::npos ? std::string() : s_.substr(0, i + 1);
+        return *this;
+    }
+    path lexically_normal() const { return *this; }
+    path lexically_relative(const path& base) const
+    {
+        if (s_.compare(0, base.s_.size(), base.s_) == 0) {
+            std::string r = s_.substr(base.s_.size());
+            while (!r.empty() && r[0] == '/')
+                r.erase(0, 1);
+            return path(r);
+        }
+        return *this;
+    }
+    path make_preferred() const { return *this; }
+    int compare(const path& o) const noexcept { return s_.compare(o.s_); }
+
+    friend path operator/(path a, const path& b) { return a /= b; }
+    friend bool operator==(const path& a, const path& b) { return a.s_ == b.s_; }
+    friend bool operator!=(const path& a, const path& b) { return a.s_ != b.s_; }
+    friend bool operator<(const path& a, const path& b) { return a.s_ < b.s_; }
+    friend std::ostream& operator<<(std::ostream& os, const path& p) { return os << '"' << p.s_ << '"'; }
+
+private:
+    std::string s_;
+};
+
+using filesystem_error = std::system_error;
+using file_time_type = std::chrono::system_clock::time_point;
+
+enum class copy_options : unsigned {
+    none = 0,
+    skip_existing = 1,
+    overwrite_existing = 2,
+    update_existing = 4,
+    recursive = 8,
+};
+inline copy_options operator|(copy_options a, copy_options b)
+{
+    return static_cast<copy_options>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
+}
+inline unsigned operator&(copy_options a, copy_options b)
+{
+    return static_cast<unsigned>(a) & static_cast<unsigned>(b);
+}
+
+enum class directory_options : unsigned { none = 0, follow_directory_symlink = 1, skip_permission_denied = 2 };
+inline directory_options operator|(directory_options a, directory_options b)
+{
+    return static_cast<directory_options>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
+}
+
+namespace detail {
+struct Stat {
+    int st_mode = 0;
+    uint64_t st_size = 0;
+    int64_t st_mtime = 0;
+};
+inline bool stat_of(const path& p, Stat& st)
+{
+    return mkw_fs_stat(p.c_str(), &st.st_mode, &st.st_size, &st.st_mtime) == 0;
+}
+constexpr int kDir = 0040000;
+constexpr int kReg = 0100000;
+constexpr int kFmt = 0170000;
+} // namespace detail
+
+inline bool exists(const path& p) { detail::Stat st; return detail::stat_of(p, st); }
+inline bool exists(const path& p, std::error_code& ec) noexcept { ec.clear(); return exists(p); }
+inline bool is_directory(const path& p)
+{
+    detail::Stat st;
+    return detail::stat_of(p, st) && (st.st_mode & detail::kFmt) == detail::kDir;
+}
+inline bool is_directory(const path& p, std::error_code& ec) noexcept { ec.clear(); return is_directory(p); }
+inline bool is_regular_file(const path& p)
+{
+    detail::Stat st;
+    return detail::stat_of(p, st) && (st.st_mode & detail::kFmt) == detail::kReg;
+}
+inline bool is_regular_file(const path& p, std::error_code& ec) noexcept { ec.clear(); return is_regular_file(p); }
+inline std::uintmax_t file_size(const path& p)
+{
+    detail::Stat st;
+    return detail::stat_of(p, st) ? st.st_size : static_cast<std::uintmax_t>(-1);
+}
+inline std::uintmax_t file_size(const path& p, std::error_code& ec) noexcept
+{
+    ec.clear();
+    return file_size(p);
+}
+inline file_time_type last_write_time(const path& p)
+{
+    detail::Stat st;
+    if (!detail::stat_of(p, st))
+        return file_time_type();
+    return std::chrono::system_clock::from_time_t(static_cast<time_t>(st.st_mtime));
+}
+inline file_time_type last_write_time(const path& p, std::error_code& ec) noexcept
+{
+    ec.clear();
+    return last_write_time(p);
+}
+
+inline bool create_directory(const path& p)
+{
+    return mkw_fs_mkdir(p.c_str()) == 0;
+}
+inline bool create_directories(const path& p)
+{
+    if (p.empty() || is_directory(p))
+        return false;
+    const path parent = p.parent_path();
+    if (!parent.empty() && parent != p && !is_directory(parent))
+        create_directories(parent);
+    return create_directory(p);
+}
+inline bool create_directories(const path& p, std::error_code& ec) noexcept
+{
+    ec.clear();
+    return create_directories(p);
+}
+
+inline bool remove(const path& p)
+{
+    if (is_directory(p))
+        return mkw_fs_rmdir(p.c_str()) == 0;
+    return mkw_fs_unlink(p.c_str()) == 0;
+}
+inline bool remove(const path& p, std::error_code& ec) noexcept { ec.clear(); return remove(p); }
+inline void rename(const path& from, const path& to)
+{
+    // lv2 refuses to rename over an existing file; POSIX replaces it.
+    ::rename(from.c_str(), to.c_str());   // wrapped onto lv2 (compat_lv2.cpp)
+}
+inline void rename(const path& from, const path& to, std::error_code& ec) noexcept
+{
+    ec.clear();
+    rename(from, to);
+}
+
+inline bool copy_file(const path& from, const path& to, copy_options opts = copy_options::none)
+{
+    if (exists(to)) {
+        if (opts & copy_options::skip_existing)
+            return false;
+        if (!(opts & copy_options::overwrite_existing) && !(opts & copy_options::update_existing))
+            return false;
+    }
+    FILE* in = ::fopen(from.c_str(), "rb");
+    if (!in)
+        return false;
+    FILE* out = ::fopen(to.c_str(), "wb");
+    if (!out) {
+        ::fclose(in);
+        return false;
+    }
+    std::vector<char> buf(64 * 1024);
+    size_t n;
+    while ((n = ::fread(buf.data(), 1, buf.size(), in)) > 0)
+        ::fwrite(buf.data(), 1, n, out);
+    ::fclose(in);
+    ::fclose(out);
+    return true;
+}
+inline bool copy_file(const path& from, const path& to, copy_options opts, std::error_code& ec) noexcept
+{
+    ec.clear();
+    return copy_file(from, to, opts);
+}
+inline bool copy_file(const path& from, const path& to, std::error_code& ec) noexcept
+{
+    ec.clear();
+    return copy_file(from, to, copy_options::none);
+}
+
+// The working directory of a PS3 application is its USRDIR.
+inline path& mkw_current_path_storage()
+{
+    static path p("/dev_hdd0/game/MKWP00001/USRDIR");
+    return p;
+}
+inline path current_path() { return mkw_current_path_storage(); }
+inline path current_path(std::error_code& ec) { ec.clear(); return current_path(); }
+inline void current_path(const path& p) { mkw_current_path_storage() = p; }
+inline path absolute(const path& p) { return p.is_absolute() ? p : current_path() / p; }
+inline path weakly_canonical(const path& p) { return absolute(p); }
+inline path weakly_canonical(const path& p, std::error_code& ec) { ec.clear(); return absolute(p); }
+inline path canonical(const path& p) { return absolute(p); }
+inline path relative(const path& p, const path& base = current_path()) { return p.lexically_relative(base); }
+inline path relative(const path& p, const path& base, std::error_code& ec) { ec.clear(); return p.lexically_relative(base); }
+inline path relative(const path& p, std::error_code& ec) { ec.clear(); return p.lexically_relative(current_path()); }
+
+class directory_entry {
+public:
+    directory_entry() = default;
+    explicit directory_entry(const filesystem::path& p) : p_(p) {}
+    const filesystem::path& path() const noexcept { return p_; }
+    operator const filesystem::path&() const noexcept { return p_; }
+    bool is_regular_file() const { return filesystem::is_regular_file(p_); }
+    bool is_regular_file(std::error_code& ec) const noexcept { ec.clear(); return is_regular_file(); }
+    bool is_directory() const { return filesystem::is_directory(p_); }
+    bool is_directory(std::error_code& ec) const noexcept { ec.clear(); return is_directory(); }
+    bool exists() const { return filesystem::exists(p_); }
+    std::uintmax_t file_size() const { return filesystem::file_size(p_); }
+
+private:
+    filesystem::path p_;
+};
+
+class directory_iterator {
+public:
+    using value_type = directory_entry;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const directory_entry*;
+    using reference = const directory_entry&;
+    using iterator_category = std::input_iterator_tag;
+
+    directory_iterator() = default;
+    explicit directory_iterator(const path& p, directory_options = directory_options::none)
+    {
+        load(p, false);
+    }
+    directory_iterator(const path& p, std::error_code& ec) { ec.clear(); load(p, false); }
+    directory_iterator(const path& p, directory_options, std::error_code& ec) { ec.clear(); load(p, false); }
+
+    const directory_entry& operator*() const { return (*entries_)[pos_]; }
+    const directory_entry* operator->() const { return &(*entries_)[pos_]; }
+    directory_iterator& operator++()
+    {
+        if (entries_ && ++pos_ >= entries_->size())
+            entries_.reset();
+        return *this;
+    }
+    directory_iterator& increment(std::error_code& ec) { ec.clear(); return ++(*this); }
+    bool operator==(const directory_iterator& o) const { return !entries_ && !o.entries_; }
+    bool operator!=(const directory_iterator& o) const { return !(*this == o); }
+
+protected:
+    void load(const path& root, bool recursive)
+    {
+        auto list = std::make_shared<std::vector<directory_entry>>();
+        collect(root, recursive, *list);
+        if (!list->empty())
+            entries_ = std::move(list);
+        pos_ = 0;
+    }
+    static void collect(const path& root, bool recursive, std::vector<directory_entry>& out)
+    {
+        int fd = -1;
+        if (mkw_fs_opendir(root.c_str(), &fd) != 0)
+            return;
+        char entName[1024];
+        std::vector<path> subdirs;
+        while (mkw_fs_readdir(fd, entName, sizeof entName) > 0) {
+            const std::string name(entName);
+            if (name == "." || name == "..")
+                continue;
+            const path child = root / name;
+            out.emplace_back(child);
+            if (recursive && filesystem::is_directory(child))
+                subdirs.push_back(child);
+        }
+        mkw_fs_closedir(fd);
+        for (const auto& d : subdirs)
+            collect(d, true, out);
+    }
+
+    std::shared_ptr<std::vector<directory_entry>> entries_;
+    size_t pos_ = 0;
+};
+
+inline directory_iterator begin(directory_iterator it) noexcept { return it; }
+inline directory_iterator end(const directory_iterator&) noexcept { return directory_iterator(); }
+
+class recursive_directory_iterator : public directory_iterator {
+public:
+    recursive_directory_iterator() = default;
+    explicit recursive_directory_iterator(const path& p, directory_options = directory_options::none)
+    {
+        load(p, true);
+    }
+    recursive_directory_iterator(const path& p, std::error_code& ec) { ec.clear(); load(p, true); }
+    recursive_directory_iterator(const path& p, directory_options, std::error_code& ec)
+    {
+        ec.clear();
+        load(p, true);
+    }
+    recursive_directory_iterator& operator++()
+    {
+        directory_iterator::operator++();
+        return *this;
+    }
+};
+
+inline recursive_directory_iterator begin(recursive_directory_iterator it) noexcept { return it; }
+inline recursive_directory_iterator end(const recursive_directory_iterator&) noexcept
+{
+    return recursive_directory_iterator();
+}
+
+inline std::uintmax_t remove_all(const path& p)
+{
+    std::uintmax_t n = 0;
+    if (is_directory(p)) {
+        std::vector<path> children;
+        for (directory_iterator it(p), e; it != e; ++it)
+            children.push_back(it->path());
+        for (const auto& c : children)
+            n += remove_all(c);
+    }
+    if (remove(p))
+        ++n;
+    return n;
+}
+inline std::uintmax_t remove_all(const path& p, std::error_code& ec) noexcept
+{
+    ec.clear();
+    return remove_all(p);
+}
+
+} // namespace filesystem
+} // namespace std

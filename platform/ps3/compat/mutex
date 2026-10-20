@@ -1,0 +1,73 @@
+// -*- C++ -*-
+// <mutex> for the PS3: libstdc++ here is built without gthreads, so std::mutex,
+// recursive_mutex, once_flag and call_once are supplied on lv2 kernel mutexes.
+// lock_guard / unique_lock come from the real header.
+#pragma once
+#include_next <mutex>
+
+#include <atomic>
+#include <utility>
+#include <cstdint>
+
+// Thin lv2 wrappers (compat_lv2.cpp). Declared here instead of including the
+// SDK headers: PSL1GHT's ppu-types.h defines s32 as int, aurora's Wii headers
+// define it as long, and both end up in the same translation units.
+extern "C" {
+int mkw_lv2_mutex_create(uint32_t* id, int recursive);
+int mkw_lv2_mutex_destroy(uint32_t id);
+int mkw_lv2_mutex_lock(uint32_t id);
+int mkw_lv2_mutex_trylock(uint32_t id);
+int mkw_lv2_mutex_unlock(uint32_t id);
+}
+
+namespace std {
+
+class mkw_lv2_mutex_base {
+public:
+    explicit mkw_lv2_mutex_base(bool recursive) noexcept { mkw_lv2_mutex_create(&id_, recursive ? 1 : 0); }
+    ~mkw_lv2_mutex_base() { mkw_lv2_mutex_destroy(id_); }
+    mkw_lv2_mutex_base(const mkw_lv2_mutex_base&) = delete;
+    mkw_lv2_mutex_base& operator=(const mkw_lv2_mutex_base&) = delete;
+
+    void lock() { mkw_lv2_mutex_lock(id_); }
+    bool try_lock() { return mkw_lv2_mutex_trylock(id_) == 0; }
+    void unlock() { mkw_lv2_mutex_unlock(id_); }
+    uint32_t native_handle() const noexcept { return id_; }
+
+private:
+    uint32_t id_{};
+};
+
+class mutex : public mkw_lv2_mutex_base {
+public:
+    mutex() noexcept : mkw_lv2_mutex_base(false) {}
+};
+
+class recursive_mutex : public mkw_lv2_mutex_base {
+public:
+    recursive_mutex() noexcept : mkw_lv2_mutex_base(true) {}
+};
+
+struct once_flag {
+    constexpr once_flag() noexcept = default;
+    once_flag(const once_flag&) = delete;
+    once_flag& operator=(const once_flag&) = delete;
+    std::atomic<int> state_{0};   // 0 untouched, 1 running, 2 done
+};
+
+template <class Callable, class... Args>
+void call_once(once_flag& flag, Callable&& f, Args&&... args)
+{
+    if (flag.state_.load(std::memory_order_acquire) == 2)
+        return;
+    int expected = 0;
+    if (flag.state_.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
+        std::forward<Callable>(f)(std::forward<Args>(args)...);
+        flag.state_.store(2, std::memory_order_release);
+        return;
+    }
+    while (flag.state_.load(std::memory_order_acquire) != 2) {
+    }
+}
+
+} // namespace std

@@ -1,0 +1,171 @@
+# PS3 build of the translated game + runtime. Run through tools/build-ps3.sh,
+# which mounts this repo at /repo and the translation workspace at /ws inside
+# the ps3dev toolchain image.
+#
+#   make -f Makefile.ps3 -j6            ELF + SELF
+#   make -f Makefile.ps3 runtime        runtime objects only (fast iteration)
+
+PS3DEV  ?= /usr/local/ps3dev
+PPU_BIN := $(PS3DEV)/ppu/bin
+CXX     := $(PPU_BIN)/powerpc64-ps3-elf-g++
+CC      := $(PPU_BIN)/powerpc64-ps3-elf-gcc
+STRIP   := $(PPU_BIN)/powerpc64-ps3-elf-strip
+REPO    ?= /repo
+WS      ?= /ws
+OUT     ?= $(WS)/build/ps3
+TARGET  := $(OUT)/mkwii.elf
+
+# Everything is built with r14 reserved: translated code keeps the guest arena
+# base there (guest_flat_memory.h), so nothing else may use it.
+ARCH    := -mcpu=cell -mhard-float -ffixed-r14
+OPT     := -O2 -fno-strict-aliasing
+DEFS    := -D__PS3__ -DTARGET_PC -DNDEBUG
+
+INC_RT  := -I$(REPO)/platform/ps3/compat -include mkw_ps3_compat.h \
+           -I$(REPO)/platform/ps3 -I$(REPO)/runtime/include -I$(REPO)/runtime/src \
+           -I$(REPO)/runtime/src/hle -I$(WS) -I$(WS)/generated \
+           -I$(REPO)/runtime/third_party/toml11 \
+           -I$(REPO)/runtime/third_party/pugixml -I$(PS3DEV)/ppu/include
+
+CXXFLAGS_RT  := -std=gnu++17 $(ARCH) $(OPT) $(DEFS) $(INC_RT) -w
+# Files that talk to lv2 directly see only the PSL1GHT headers.
+CXXFLAGS_LV2 := -std=gnu++17 $(ARCH) $(OPT) -D__PS3__ -I$(REPO)/platform/ps3/compat -I$(REPO)/platform/ps3 \
+                -I$(REPO)/runtime/include -I$(PS3DEV)/ppu/include -w
+CFLAGS_REN   := -std=gnu11 $(ARCH) -maltivec -mabi=altivec -O3 -fno-strict-aliasing \
+                -D__PS3__ -DNDEBUG -DLOG_LEVEL_COMPILED=3 -I$(REPO)/renderer -I$(PS3DEV)/ppu/include -w
+SPU_CC       := $(PS3DEV)/spu/bin/spu-gcc
+SPU_CFLAGS   := -O2 -mdual-nops -fmodulo-sched -ffunction-sections -fdata-sections \
+                -I$(REPO)/renderer -I$(PS3DEV)/spu/include -w
+# Translated code: the arena base pinned in r14.
+CXXFLAGS_GEN := -std=gnu++17 $(ARCH) $(OPT) -DMKW_PIN_ARENA -DNDEBUG \
+                -I$(REPO)/platform/ps3/compat -include mkw_ps3_compat.h \
+                -I$(REPO)/runtime/include -I$(WS)/generated -w
+
+# ---- sources ---------------------------------------------------------------
+
+RT_SRCS    := $(shell find $(REPO)/runtime/src -name '*.cpp' | sort) \
+              $(REPO)/runtime/third_party/pugixml/pugixml.cpp
+
+LV2_SRCS   := $(REPO)/platform/ps3/compat_lv2.cpp \
+              $(REPO)/platform/ps3/pad_lv2.cpp \
+              $(REPO)/platform/ps3/rescue_ps3.cpp \
+              $(REPO)/platform/ps3/bench_ps3.cpp \
+              $(REPO)/platform/ps3/guest_flat_memory_ps3.cpp \
+              $(REPO)/platform/ps3/audio_backend_ps3.cpp
+PLAT_SRCS  := $(REPO)/platform/ps3/main_ps3.cpp \
+              $(REPO)/platform/ps3/pad_ps3.cpp \
+              $(REPO)/platform/ps3/data_sections_ps3.cpp \
+              $(REPO)/platform/ps3/fiber/win_fiber_ps3.cpp
+ASM_SRCS   := $(REPO)/platform/ps3/fiber/fiber_ps3.S
+
+# The RSX renderer (C), fed by the runtime's GX parser through a GxSink.
+REN_SRCS   := $(REPO)/renderer/src/common/log.c \
+              $(addprefix $(REPO)/renderer/src/core/gx/,bp.c gx_state.c gx_vertex.c) \
+              $(addprefix $(REPO)/renderer/src/video/rsx/,vertex_loader.c texture_decode.c \
+                  xfb_present.c efb_copy.c xf_program.c gx_features.c rsx_video.c rsx_shader.c \
+                  rsx_tritest.c gx_render.c tev_program.c) \
+              $(REPO)/renderer/src/platform/ps3/spu_vtx.c \
+              $(REPO)/renderer/src/platform/ps3/renderer_glue.c
+
+SHARD_SRCS := $(sort $(wildcard $(WS)/build/shards/base_common/*.cpp))
+GEN_SRCS   := $(sort $(wildcard $(WS)/build/shards/base_dispatch/*.cpp)) \
+              $(sort $(wildcard $(WS)/build/shards/base_registration/*.cpp)) \
+              $(WS)/generated/guest_symbol_table.cpp
+
+obj = $(patsubst /%,$(OUT)/obj/%.o,$(1))
+
+RT_OBJS    := $(call obj,$(RT_SRCS))
+LV2_OBJS   := $(call obj,$(LV2_SRCS))
+PLAT_OBJS  := $(call obj,$(PLAT_SRCS))
+ASM_OBJS   := $(call obj,$(ASM_SRCS))
+REN_OBJS   := $(call obj,$(REN_SRCS))
+SHARD_OBJS := $(call obj,$(SHARD_SRCS))
+GEN_OBJS   := $(call obj,$(GEN_SRCS))
+BLOB_OBJ   := $(OUT)/obj/data_sections_blobs.o
+
+ALL_OBJS := $(RT_OBJS) $(LV2_OBJS) $(PLAT_OBJS) $(ASM_OBJS) $(REN_OBJS) $(SHARD_OBJS) $(GEN_OBJS)
+SPU_ELF  := $(OUT)/vtx_spu.elf
+
+LIBS := -L$(PS3DEV)/ppu/lib -lrsx -lgcm_sys -lio -laudio -lnet -lsysutil -lsysmodule -lsysfs -lrt -llv2dbg -llv2 -lm -lstdc++
+
+comma := ,
+
+# ---- rules -------------------------------------------------------------------
+
+.PHONY: all runtime
+all: $(TARGET).self $(SPU_ELF)
+runtime: $(RT_OBJS) $(LV2_OBJS) $(PLAT_OBJS) $(ASM_OBJS) $(REN_OBJS) $(SPU_ELF)
+
+DEPFLAGS = -MMD -MP
+
+$(RT_OBJS): $(OUT)/obj/%.o: /%
+	@mkdir -p $(dir $@)
+	@echo "  CXX  $(notdir $<)"
+	@$(CXX) $(CXXFLAGS_RT) $(DEPFLAGS) -c $< -o $@
+
+$(PLAT_OBJS): $(OUT)/obj/%.o: /%
+	@mkdir -p $(dir $@)
+	@echo "  CXX  $(notdir $<)"
+	@$(CXX) $(CXXFLAGS_RT) $(DEPFLAGS) -c $< -o $@
+
+$(LV2_OBJS): $(OUT)/obj/%.o: /%
+	@mkdir -p $(dir $@)
+	@echo "  CXX  $(notdir $<)"
+	@$(CXX) $(CXXFLAGS_LV2) $(DEPFLAGS) -c $< -o $@
+
+$(ASM_OBJS): $(OUT)/obj/%.o: /%
+	@mkdir -p $(dir $@)
+	@echo "  AS   $(notdir $<)"
+	@$(CC) $(ARCH) -c $< -o $@
+
+$(REN_OBJS): $(OUT)/obj/%.o: /%
+	@mkdir -p $(dir $@)
+	@echo "  CC   $(notdir $<)"
+	@$(CC) $(CFLAGS_REN) $(DEPFLAGS) -c $< -o $@
+
+# The vertex-decode SPU program, loaded from USRDIR at run time. Without
+# libsputhread the entry point is newlib's _start, which lv2 never runs.
+$(SPU_ELF): $(REPO)/renderer/spu/vtx_spu.c $(REPO)/renderer/src/video/rsx/spu_vtx_shared.h
+	@mkdir -p $(dir $@)
+	@echo "  SPU  $(notdir $<)"
+	@$(SPU_CC) $(SPU_CFLAGS) -o $@ $< -Wl,--gc-sections -L$(PS3DEV)/spu/lib -lsputhread
+
+$(SHARD_OBJS): $(OUT)/obj/%.o: /%
+	@mkdir -p $(dir $@)
+	@echo "  GEN  $(notdir $<)"
+	@$(CXX) $(CXXFLAGS_GEN) -I$(dir $<) $(DEPFLAGS) -c $< -o $@
+
+$(GEN_OBJS): $(OUT)/obj/%.o: /%
+	@mkdir -p $(dir $@)
+	@echo "  GEN  $(notdir $<)"
+	@$(CXX) $(CXXFLAGS_GEN) -I$(WS)/build/shards/base_common $(DEPFLAGS) -c $< -o $@
+
+# The translator writes the blob table for a PE toolchain with host paths;
+# retarget it to ELF and the workspace mount.
+$(OUT)/data_sections_blobs.S: $(WS)/generated/data_sections_init_blobs.S
+	@mkdir -p $(dir $@)
+	@sed -e 's#^\.section \.rdata,"dr"#.section .rodata,"a"#' \
+	     -e 's#"[^"]*/generated/data_sections_init_blobs/#"$(WS)/generated/data_sections_init_blobs/#' $< > $@
+
+$(BLOB_OBJ): $(OUT)/data_sections_blobs.S
+	@echo "  AS   data_sections_blobs.S"
+	@$(CC) -c $< -o $@
+
+$(TARGET): $(ALL_OBJS)
+	@echo "  LD   $(notdir $@)"
+	@$(CXX) $(ARCH) -Wl,--gc-sections -Wl,--wrap=exit -Wl,--wrap=abort \
+	    $(addprefix -Wl$(comma)--wrap=,printf vprintf fprintf vfprintf puts putchar fputs fputc fwrite fflush rename fsync) $(ALL_OBJS) $(LIBS) -o $@
+
+# sprxlinker fixes up the lv2 library import stubs. The XMB launches a fake
+# NPDRM SELF (`fself -n`); the relaunch path spawns a plain one (RELOAD.SELF),
+# because the loader refuses to start an NPDRM image from sysProcessExitSpawn2.
+$(TARGET).self: $(TARGET)
+	@echo "  SELF $(notdir $@)"
+	@$(STRIP) $< -o $(OUT)/mkwii.stripped.elf
+	@$(PS3DEV)/bin/sprxlinker $(OUT)/mkwii.stripped.elf
+	@$(PS3DEV)/bin/fself $(OUT)/mkwii.stripped.elf $@ > /dev/null
+	@cp $@ $(OUT)/RELOAD.SELF
+	@$(PS3DEV)/bin/fself -n $(OUT)/mkwii.stripped.elf $(OUT)/EBOOT.BIN > /dev/null
+	@ls -l $(OUT)/EBOOT.BIN
+
+-include $(ALL_OBJS:.o=.d)

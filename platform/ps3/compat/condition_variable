@@ -1,0 +1,103 @@
+// -*- C++ -*-
+// <condition_variable> for the PS3 (libstdc++ without gthreads). An lv2
+// condition is bound to one mutex at creation, so it is created on first wait
+// against the mutex that wait names; the runtime always pairs a condition
+// with one mutex.
+#pragma once
+#include_next <condition_variable>
+
+#include <chrono>
+#include <mutex>
+#include <cstdint>
+
+extern "C" {
+int mkw_lv2_cond_create(uint32_t* id, uint32_t mutex);
+int mkw_lv2_cond_destroy(uint32_t id);
+int mkw_lv2_cond_wait(uint32_t id, uint64_t timeout_usec);
+int mkw_lv2_cond_signal(uint32_t id);
+int mkw_lv2_cond_broadcast(uint32_t id);
+}
+
+namespace std {
+
+enum class cv_status { no_timeout, timeout };
+
+class condition_variable {
+public:
+    condition_variable() noexcept = default;
+    ~condition_variable()
+    {
+        if (bound_)
+            mkw_lv2_cond_destroy(cond_);
+    }
+    condition_variable(const condition_variable&) = delete;
+    condition_variable& operator=(const condition_variable&) = delete;
+
+    void notify_one() noexcept
+    {
+        if (bound_)
+            mkw_lv2_cond_signal(cond_);
+    }
+    void notify_all() noexcept
+    {
+        if (bound_)
+            mkw_lv2_cond_broadcast(cond_);
+    }
+
+    void wait(unique_lock<mutex>& lock)
+    {
+        bind(*lock.mutex());
+        mkw_lv2_cond_wait(cond_, 0);
+    }
+
+    template <class Pred>
+    void wait(unique_lock<mutex>& lock, Pred pred)
+    {
+        while (!pred())
+            wait(lock);
+    }
+
+    template <class Rep, class Period>
+    cv_status wait_for(unique_lock<mutex>& lock, const chrono::duration<Rep, Period>& d)
+    {
+        bind(*lock.mutex());
+        auto us = chrono::duration_cast<chrono::microseconds>(d).count();
+        if (us <= 0)
+            us = 1;
+        return mkw_lv2_cond_wait(cond_, static_cast<uint64_t>(us)) == 0 ? cv_status::no_timeout
+                                                              : cv_status::timeout;
+    }
+
+    template <class Rep, class Period, class Pred>
+    bool wait_for(unique_lock<mutex>& lock, const chrono::duration<Rep, Period>& d, Pred pred)
+    {
+        const auto deadline = chrono::steady_clock::now() + d;
+        while (!pred()) {
+            const auto now = chrono::steady_clock::now();
+            if (now >= deadline)
+                return pred();
+            wait_for(lock, deadline - now);
+        }
+        return true;
+    }
+
+    template <class Clock, class Duration, class Pred>
+    bool wait_until(unique_lock<mutex>& lock, const chrono::time_point<Clock, Duration>& t, Pred pred)
+    {
+        return wait_for(lock, t - Clock::now(), pred);
+    }
+
+private:
+    void bind(mutex& m)
+    {
+        if (bound_)
+            return;
+        mkw_lv2_cond_create(&cond_, m.native_handle());
+        bound_ = true;
+    }
+
+    uint32_t cond_{};
+    bool bound_ = false;
+};
+
+} // namespace std

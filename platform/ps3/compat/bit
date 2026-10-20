@@ -1,0 +1,89 @@
+// -*- C++ -*-
+// The C++20 <bit> functions the runtime uses, for GCC 7.
+#pragma once
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <type_traits>
+
+namespace std {
+
+template <class To, class From>
+inline To bit_cast(const From& from) noexcept
+{
+    static_assert(sizeof(To) == sizeof(From), "bit_cast size mismatch");
+    To to;
+    std::memcpy(&to, &from, sizeof(To));
+    return to;
+}
+
+template <class T>
+constexpr int popcount(T x) noexcept
+{
+    return sizeof(T) <= sizeof(unsigned) ? __builtin_popcount(static_cast<unsigned>(x))
+                                         : __builtin_popcountll(static_cast<unsigned long long>(x));
+}
+
+template <class T>
+constexpr int countl_zero(T x) noexcept
+{
+    constexpr int bits = std::numeric_limits<T>::digits;
+    if (x == 0)
+        return bits;
+    return sizeof(T) <= sizeof(unsigned)
+               ? __builtin_clz(static_cast<unsigned>(x)) - (32 - bits)
+               : __builtin_clzll(static_cast<unsigned long long>(x)) - (64 - bits);
+}
+
+template <class T>
+constexpr int countr_zero(T x) noexcept
+{
+    if (x == 0)
+        return std::numeric_limits<T>::digits;
+    return sizeof(T) <= sizeof(unsigned) ? __builtin_ctz(static_cast<unsigned>(x))
+                                         : __builtin_ctzll(static_cast<unsigned long long>(x));
+}
+
+template <class T>
+constexpr bool has_single_bit(T x) noexcept
+{
+    return x != 0 && (x & (x - 1)) == 0;
+}
+
+template <class T>
+constexpr int bit_width(T x) noexcept
+{
+    return std::numeric_limits<T>::digits - countl_zero(x);
+}
+
+template <class T>
+constexpr T bit_ceil(T x) noexcept
+{
+    return x <= 1 ? T(1) : T(T(1) << bit_width(T(x - 1)));
+}
+
+template <class T>
+constexpr T bit_floor(T x) noexcept
+{
+    return x == 0 ? T(0) : T(T(1) << (bit_width(x) - 1));
+}
+
+template <class T>
+constexpr T rotl(T x, int s) noexcept
+{
+    constexpr int n = std::numeric_limits<T>::digits;
+    const int r = s % n;
+    return r == 0 ? x : T((x << r) | (x >> (n - r)));
+}
+
+template <class T>
+constexpr T rotr(T x, int s) noexcept
+{
+    constexpr int n = std::numeric_limits<T>::digits;
+    const int r = s % n;
+    return r == 0 ? x : T((x >> r) | (x << (n - r)));
+}
+
+enum class endian { little = __ORDER_LITTLE_ENDIAN__, big = __ORDER_BIG_ENDIAN__, native = __BYTE_ORDER__ };
+
+} // namespace std

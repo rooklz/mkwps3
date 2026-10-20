@@ -1,0 +1,24 @@
+# Game data and anything derived from it never enter the repository.
+/game/
+/generated/
+/build/
+*.dol
+*.rel
+*.wbfs
+*.iso
+*.rvz
+*.7z
+*.self
+*.elf
+*.pkg
+*.sfo
+*.SFO
+# Runtime data files supplied by the user (see README): local/ only.
+/local/
+# Translator build outputs
+upstream/wiicompiled/translator/src/**/bin/
+upstream/wiicompiled/translator/src/**/obj/
+upstream/wiicompiled/translator/tests/**/bin/
+upstream/wiicompiled/translator/tests/**/obj/
+.DS_Store
+/tools/local.env
