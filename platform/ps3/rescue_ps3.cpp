@@ -210,6 +210,7 @@ extern "C" int mkw_guest_sample(uint32_t* func, uint32_t* lr, uint32_t* sp);
 extern "C" int mkw_guest_stack(uint32_t* out, unsigned cap);
 extern "C" int mkw_bench(char* out, unsigned cap);
 extern "C" int mkw_mark(char* out, unsigned cap);
+extern "C" int mkw_slow_census(const char* arg, char* out, unsigned cap);
 extern "C" int mkw_where(char* out, unsigned cap);
 extern "C" void mkw_renderer_request_shot(void);
 extern "C" void mkw_renderer_request_ftrace(unsigned from);
@@ -406,6 +407,11 @@ void Listener(void*)
             } else if (!std::strncmp(cmd, "gfx", 3)) {
                 char out[2048];
                 mkw_renderer_stats(out, sizeof out);
+                SendText(c, out);
+            } else if (!std::strncmp(cmd, "slow", 4)) {
+                // `slow on`, `slow off`, or `slow`: the guest functions that took memory slow paths.
+                char out[3072];
+                mkw_slow_census(cmd[4] == ' ' ? cmd + 5 : nullptr, out, sizeof out);
                 SendText(c, out);
             } else if (!std::strncmp(cmd, "mark", 4)) {
                 char out[160];

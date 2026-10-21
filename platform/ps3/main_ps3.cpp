@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <filesystem>
@@ -266,6 +267,77 @@ extern "C" int mkw_mark(char* out, unsigned cap)
                     static_cast<unsigned long long>(s.guestIdleNanos),
                     static_cast<unsigned long long>(s.gpuBusyNanos), g_fixedSeedReads, stage,
                     race ? 1 : 0);
+}
+
+// ---- slow-path census (the control port's `slow`) ---------------------------
+//
+// Counts, per guest function and kind (slow_path_census.h), the accesses that took
+// a memory slow path: a store to the GX pipe or a quantized paired-single the
+// translator couldn't resolve shows up here with its function. Off until `slow on`.
+
+extern "C" {
+volatile int g_mkwSlowCensus = 0;
+}
+
+namespace {
+struct CensusSlot {
+    uint32_t fn;
+    uint32_t kind;
+    uint32_t count;
+};
+constexpr unsigned kCensusSlots = 8192;
+CensusSlot g_census[kCensusSlots];
+}
+
+extern "C" void mkw_slow_census_note(uint32_t kind)
+{
+    const uint32_t fn = RecompMod::g_currentTranslatedExecutionAddress;
+    unsigned slot = ((fn >> 2) * 2654435761u + kind * 40503u) & (kCensusSlots - 1);
+    for (unsigned probe = 0; probe < 16; ++probe, slot = (slot + 1) & (kCensusSlots - 1)) {
+        CensusSlot& entry = g_census[slot];
+        if (entry.count != 0 && (entry.fn != fn || entry.kind != kind))
+            continue;
+        entry.fn = fn;
+        entry.kind = kind;
+        ++entry.count;
+        return;
+    }
+}
+
+extern "C" int mkw_slow_census(const char* arg, char* out, unsigned cap)
+{
+    static const char* const kKinds[] = {"read mmio", "read ram",  "write fifo", "write mmio",
+                                         "write ram", "psq load", "psq store",  "range fallback"};
+    if (arg && !std::strncmp(arg, "on", 2)) {
+        std::memset(g_census, 0, sizeof g_census);
+        g_mkwSlowCensus = 1;
+        return snprintf(out, cap, "census on\n");
+    }
+    if (arg && !std::strncmp(arg, "off", 3)) {
+        g_mkwSlowCensus = 0;
+        return snprintf(out, cap, "census off\n");
+    }
+    // The 40 busiest, then a fresh count.
+    CensusSlot top[40] = {};
+    for (const CensusSlot& entry : g_census) {
+        if (entry.count <= top[39].count)
+            continue;
+        unsigned at = 39;
+        while (at > 0 && top[at - 1].count < entry.count) {
+            top[at] = top[at - 1];
+            --at;
+        }
+        top[at] = entry;
+    }
+    std::memset(g_census, 0, sizeof g_census);
+    int used = 0;
+    for (const CensusSlot& entry : top) {
+        if (entry.count == 0 || used >= static_cast<int>(cap) - 64)
+            break;
+        used += snprintf(out + used, cap - used, "%08x %-14s %u\n", entry.fn,
+                         kKinds[entry.kind & 7u], entry.count);
+    }
+    return used;
 }
 
 // One stack sample: [current function or 1 when idle, LR, return addresses
