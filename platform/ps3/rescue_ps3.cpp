@@ -209,6 +209,7 @@ void Ctx(int c, const char* which)
 extern "C" int mkw_guest_sample(uint32_t* func, uint32_t* lr, uint32_t* sp);
 extern "C" int mkw_guest_stack(uint32_t* out, unsigned cap);
 extern "C" int mkw_bench(char* out, unsigned cap);
+extern "C" int mkw_mark(char* out, unsigned cap);
 extern "C" int mkw_where(char* out, unsigned cap);
 extern "C" void mkw_renderer_request_shot(void);
 extern "C" void mkw_renderer_request_ftrace(unsigned from);
@@ -405,6 +406,10 @@ void Listener(void*)
             } else if (!std::strncmp(cmd, "gfx", 3)) {
                 char out[2048];
                 mkw_renderer_stats(out, sizeof out);
+                SendText(c, out);
+            } else if (!std::strncmp(cmd, "mark", 4)) {
+                char out[160];
+                mkw_mark(out, sizeof out);
                 SendText(c, out);
             } else if (!std::strncmp(cmd, "bench", 5)) {
                 char out[512];

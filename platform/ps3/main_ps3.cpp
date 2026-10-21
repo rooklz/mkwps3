@@ -43,6 +43,8 @@ extern "C" void mkw_sysutil_start(void);
 extern "C" int mkw_sysutil_poll(void);
 extern "C" const GxSink* mkw_renderer_sink(void);
 extern "C" unsigned long long mkw_renderer_frames(void);
+extern bool g_fixedRandomSeeds;
+extern uint32_t g_fixedSeedReads;
 
 namespace {
 
@@ -70,14 +72,19 @@ void OpenLog()
     mkw_log_streams_set(stdout, stderr);
 }
 
-// /dev_hdd0/tmp/mkwii-norender.txt: parse the GX stream but draw nothing.
-bool NoRendererFlag()
+bool FlagFile(const char* path)
 {
-    FILE* f = std::fopen("/dev_hdd0/tmp/mkwii-norender.txt", "r");
+    FILE* f = std::fopen(path, "r");
     if (!f)
         return false;
     std::fclose(f);
     return true;
+}
+
+// /dev_hdd0/tmp/mkwii-norender.txt: parse the GX stream but draw nothing.
+bool NoRendererFlag()
+{
+    return FlagFile("/dev_hdd0/tmp/mkwii-norender.txt");
 }
 
 void GuestMain(void*)
@@ -96,6 +103,9 @@ void GuestMain(void*)
             std::printf("[main] after guest memory and data init: %llu KiB free\n",
                         static_cast<unsigned long long>(freeBytes >> 10));
         }
+        // /dev_hdd0/tmp/mkwii-fixedseed.txt: the same random seeds every run, so
+        // tools/bench-gp.sh races the same race (ppc_helpers.cpp).
+        g_fixedRandomSeeds = FlagFile("/dev_hdd0/tmp/mkwii-fixedseed.txt");
         if (!NoRendererFlag())
             GxHw::SetSink(mkw_renderer_sink());
         GxHw::Initialize();
@@ -231,6 +241,31 @@ extern "C" int mkw_guest_sample(uint32_t* func, uint32_t* lr, uint32_t* sp)
     *lr = cpu ? cpu->lr : 0;
     *sp = cpu ? cpu->gpr[1] : 0;
     return 1;
+}
+
+// Cumulative counters for tools/bench-gp.sh, which reads them at race frames and
+// divides: the race frame (Raceinfo+0x20, which Raceinfo::Update 0x805331B4
+// advances once a frame from the start of the countdown; the race itself starts
+// at frame 240), the time, the game thread's idle time and the GPU thread's busy
+// time in ns, how many random seeds were fixed, the race stage (Raceinfo+0x28:
+// 0 intro, 1 countdown, 2 racing) and whether a race exists at all (the Raceinfo
+// instance pointer at 0x809BD730, stored by Raceinfo::CreateInstance).
+extern "C" int mkw_mark(char* out, unsigned cap)
+{
+    uint32_t info = 0, frame = 0, stage = 0;
+    const bool race = Memory::TryRead32(0x809BD730u, info) && info >= 0x80000000u && info < 0x81800000u;
+    if (race) {
+        Memory::TryRead32(info + 0x20u, frame);
+        Memory::TryRead32(info + 0x28u, stage);
+    }
+    uint64_t tb;
+    __asm__ volatile("mftb %0" : "=r"(tb));
+    const GxHw::Stats s = GxHw::GetStats();
+    return snprintf(out, cap, "frame %u ns %llu idle %llu gpu %llu seeds %u stage %u race %d\n", frame,
+                    static_cast<unsigned long long>(tb * 10000ull / 798ull),
+                    static_cast<unsigned long long>(s.guestIdleNanos),
+                    static_cast<unsigned long long>(s.gpuBusyNanos), g_fixedSeedReads, stage,
+                    race ? 1 : 0);
 }
 
 // One stack sample: [current function or 1 when idle, LR, return addresses

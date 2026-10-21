@@ -3,6 +3,7 @@
 // by abi_bridge.h for generated code, so this TU asks for it directly.
 #include "isa/ppc_isa_cr.h"
 #include "memory.h"
+#include "recomp_mod_loader.h"
 #include "runtime_log.h"
 #include "timebase_contract.h"
 
@@ -406,8 +407,30 @@ extern "C" uint32_t PPC_Eciwx(uint32_t addr)
     throw std::runtime_error("eciwx attempted external control/MMIO read");
 }
 
+// Repeatable benchmarks (the platform layer sets this from a flag file). The
+// game seeds its random numbers from the time base, so CPU drivers and item
+// boxes play out differently every run. With this set, the time base reads
+// that seed them all return the same constant: a sequence would not do, since
+// how many seeds the menus take first depends on how long they were shown.
+bool g_fixedRandomSeeds = false;
+uint32_t g_fixedSeedReads = 0;   // reported by the control port's `mark`
+
 extern "C" uint32_t PPC_Mftb()
 {
+    if (g_fixedRandomSeeds) {
+        switch (RecompMod::g_currentTranslatedExecutionAddress) {
+        case 0x8052F924u:   // RacedataScenario::InitRng
+        case 0x80555464u:   // Random::__ct
+        case 0x805554D0u:   // Random::Reset
+        case 0x80550730u:   // GetTick, called only by the item code below
+        case 0x807BAF48u:   // Item::SlotData::Init
+        case 0x807BB42Cu:   // Item::SlotData::DecideItem
+            ++g_fixedSeedReads;
+            return 0x2468ACE0u;
+        default:
+            break;
+        }
+    }
     return static_cast<uint32_t>(GetTimeBase());
 }
 

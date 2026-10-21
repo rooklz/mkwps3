@@ -51,7 +51,7 @@ Everything is driven remotely (setup in [docs/BUILDING.md](docs/BUILDING.md#the-
 | Script | What it does |
 | --- | --- |
 | `to-race.sh` | Drives the menus into a Grand Prix race (`AUTO=1`: the game's CPU driver races your kart) |
-| `bench-gp.sh [windows]` | The benchmark: a race with the CPU driver at the wheel, averaged over 5-second windows |
+| `bench-gp.sh [frames]` | The benchmark: the same race every run (fixed random seeds, the CPU driver at the wheel), timed over race frames 600 to 3000 |
 | `ps3-shot.sh [file]` | Screenshot of the next frame |
 | `ps3-pad.sh` | Presses buttons on a virtual controller |
 | `ps3-pcs.sh` | Profiles the translated game code by function |
@@ -63,7 +63,8 @@ The control port (TCP 4001, `printf '<command>' | nc <console> 4001`) also takes
 (every draw and EFB copy of the next frame, read with `tools/ftrace.py`), `cshot <n>` (an EFB
 copy's pixels), `dinfo <n>|t<addr>|s<stages>` (one draw's full state), `dwin`/`dskip <min> <max>`
 (draw only, or skip, a range of draws), `tevshow`/`xfshow` (show shader intermediates),
-`peek <addr> <len>` and `poke <addr> <value>` (guest memory), `where`, `fault`.
+`peek <addr> <len>` and `poke <addr> <value>` (guest memory), `mark` (the benchmark's
+counters), `where`, `fault`.
 
 Running anything on someone's console changes it: deploying relaunches the app and
 `ps3-recover.sh` reboots the machine. Check before doing either on hardware that isn't yours.
@@ -88,9 +89,11 @@ Running anything on someone's console changes it: deploying relaunches the app a
 
 ## Speed changes
 
-Run `tools/bench-gp.sh 8` before and after on the same console and put both lines in the PR.
-Runs vary by a few percent, so run again if the difference is small. Measurement scaffolding
-stays out of normal builds: behind a flag, a build option, or switched on by the control port.
+Run `tools/bench-gp.sh` before and after on the same console and put both lines in the PR.
+It replays the same race each time and repeat runs agree to within about 0.3%, so a smaller
+difference than that is noise. `SEGMENT=600` also breaks the race into stretches. Measurement
+scaffolding stays out of normal builds: behind a flag, a build option, or switched on by the
+control port.
 
 ## Visual and audio changes
 

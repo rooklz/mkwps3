@@ -130,7 +130,7 @@ The app listens on TCP port 4001. The scripts in `tools/` wrap it:
 | `ps3-pad.sh` | Presses buttons on a virtual controller, for driving menus remotely |
 | `ps3-pcs.sh` | Samples where the game thread spends its time and prints a profile |
 | `to-race.sh` | Drives the menus into a race and leaves it there (`AUTO=1`: the game's CPU driver races your kart) |
-| `bench-gp.sh` | The standard benchmark: a 50cc Grand Prix with the game's CPU driver racing your kart, reporting frame times |
+| `bench-gp.sh` | The standard benchmark: a 50cc Grand Prix with the game's CPU driver racing your kart, the same race every run, reporting frame times |
 | `ps3-recover.sh` | Hard-reboots the console through webMAN and relaunches the app, for when the GPU has locked up |
 
 The log's `[stats]` line, every five seconds, is the quickest way to see how fast things
