@@ -150,7 +150,8 @@ public sealed partial class CxxLinearCodeGenerator
         // fallback) suppresses exactly the same instruction positions.
         var flagElision = PlanFlagElision(
             func, cfg, types, guestAbiContracts, modOverridableCallTargets,
-            nonReturningCallTargets, lrContinuationCallTargets);
+            nonReturningCallTargets, lrContinuationCallTargets,
+            FlagsLiveAtReturn(MarkAddressOf(func), guestAbiContract));
         // Flattened once per function: the emitter used to hash a (block, index)
         // tuple for every instruction of every emission of this body.
         var suppressedInstructionMasks = BuildSuppressedInstructionMasks(func, flagElision);

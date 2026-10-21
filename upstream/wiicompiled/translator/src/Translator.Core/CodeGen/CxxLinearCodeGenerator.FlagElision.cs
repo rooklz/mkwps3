@@ -95,9 +95,22 @@ public sealed partial class CxxLinearCodeGenerator
     }
 
     /// <summary>
+    /// The flags a caller can still read once this body returns. Without EABI trust that is everything,
+    /// since a return publishes ctx-&gt;cr/ctx-&gt;xer with no caller info. With it, the body's contract is
+    /// narrowed to CR fields 2-4 and no XER (<see cref="GuestEabiVisibility.Apply"/>), callers reload
+    /// nothing else, and a compare whose only other reader was the return becomes dead there -- which is
+    /// what keeps <c>cmpwi r3,0; beq exit</c>, the commonest branch in compiled code, from fusing.
+    /// </summary>
+    private static GuestFlagState FlagsLiveAtReturn(uint? address, GuestAbiContract contract) =>
+        address is { } a && GuestEabiVisibility.NarrowsReturnFlags && GuestEabiVisibility.Applies(a) &&
+        !contract.HasFullSynchronizationFence
+            ? GuestFlagState.Cr(GuestEabiVisibility.VisibleCr)
+            : GuestFlagState.All;
+
+    /// <summary>
     /// Condition-flag elision planner: one backward liveness pass drives compare+branch fusion, dead CR-field
-    /// writes, and dead XER.CA updates. Exit state is <see cref="GuestFlagState.All"/> since a return publishes
-    /// ctx-&gt;cr/ctx-&gt;xer with no caller info, so the last write on any path to a return is always kept.
+    /// writes, and dead XER.CA updates. <paramref name="exitLive"/> is what a return publishes that a caller
+    /// may read (<see cref="FlagsLiveAtReturn"/>), so the last write of those on any path to a return is kept.
     /// </summary>
     private static FlagElisionPlan PlanFlagElision(
         IrFunction function,
@@ -106,7 +119,8 @@ public sealed partial class CxxLinearCodeGenerator
         IReadOnlyDictionary<uint, GuestAbiContract> guestAbiContracts,
         IReadOnlySet<uint> modOverridableCallTargets,
         IReadOnlySet<uint> nonReturningCallTargets,
-        IReadOnlySet<uint> lrContinuationCallTargets)
+        IReadOnlySet<uint> lrContinuationCallTargets,
+        GuestFlagState exitLive)
     {
         // A body that dispatches on ctx->lr can re-enter any of its own labels,
         // including positions inside a block. The static CFG does not model
@@ -122,7 +136,7 @@ public sealed partial class CxxLinearCodeGenerator
 
         {
             var context = new GuestFlagLivenessContext(guestAbiContracts, modOverridableCallTargets);
-            var liveness = GuestFlagLivenessAnalyzer.Analyze(function, cfg, context, GuestFlagState.All);
+            var liveness = GuestFlagLivenessAnalyzer.Analyze(function, cfg, context, exitLive);
             var fusedCompareSites = new HashSet<(string Block, int Index)>();
 
             {
