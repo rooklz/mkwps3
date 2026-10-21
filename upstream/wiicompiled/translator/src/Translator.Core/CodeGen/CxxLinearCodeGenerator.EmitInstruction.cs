@@ -509,16 +509,13 @@ public sealed partial class CxxLinearCodeGenerator
             case IrIndirectCall icall:
                 {
                     var indirectTarget = ToExpression(icall.Target, types);
-                    if (GuestEabiVisibility.TrustFences)
-                        AppendFlush(sb, pad, ResidencyBoundarySync.EabiFencedCall);
-                    else
-                        AppendFlush(sb, pad);
+                    var indirectSync = GuestEabiVisibility.TrustFences
+                        ? ResolveIndirectCallBoundarySync(icall)
+                        : ResidencyBoundarySync.Full;
+                    AppendFlush(sb, pad, indirectSync);
                     sb.AppendLine($"{pad}InvokeIndirectCpu({indirectTarget}, ctx);");
                     AppendFunctionMark(sb, pad);
-                    if (GuestEabiVisibility.TrustFences)
-                        AppendReload(sb, pad, ResidencyBoundarySync.EabiFencedCall);
-                    else
-                        AppendReload(sb, pad);
+                    AppendReload(sb, pad, indirectSync);
                     // f1 is the conventional scalar floating-point return.
                     // Do not retag the other volatile FPRs: a callee that leaves
                     // one untouched also leaves its packed payload untouched.

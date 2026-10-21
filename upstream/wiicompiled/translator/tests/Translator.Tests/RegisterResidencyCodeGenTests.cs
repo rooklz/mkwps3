@@ -446,6 +446,34 @@ public class RegisterResidencyCodeGenTests
     }
 
     [Fact]
+    public void AnIndirectCallPublishesNeitherCtrNorWhatTheContextAlreadyHolds()
+    {
+        // Two virtual calls through CTR with r5 set before the first only. The target address is
+        // passed to the dispatcher as a value, so CTR never goes to the context; r5 goes out once.
+        var function = new IrFunction("two_indirect_calls", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrBinary("r5", IrValue.Register("r5"), IrValue.Imm(1), "add"),
+                new IrAssign("ctr", IrValue.Register("r12")),
+                new IrIndirectCall(string.Empty, IrValue.Register("ctr"), Array.Empty<IrValue>()),
+                new IrAssign("ctr", IrValue.Register("r12")),
+                new IrIndirectCall(string.Empty, IrValue.Register("ctr"), Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+
+        var body = FunctionBody(Emit(function), "two_indirect_calls");
+        var first = body.IndexOf("InvokeIndirectCpu(", StringComparison.Ordinal);
+        var second = body.IndexOf("InvokeIndirectCpu(", first + 1, StringComparison.Ordinal);
+        Assert.True(first > 0 && second > first);
+
+        Assert.DoesNotContain("ctx->ctr = ctr;", body[..second], StringComparison.Ordinal);
+        Assert.Contains("ctx->gpr[5] = r5;", body[..first], StringComparison.Ordinal);
+        Assert.DoesNotContain("ctx->gpr[5] = r5;", body[first..second], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BoundaryNarrowingDoesNotApplyToIndirectCalls()
     {
         var function = new IrFunction("narrowed_indirect", "entry", new[]

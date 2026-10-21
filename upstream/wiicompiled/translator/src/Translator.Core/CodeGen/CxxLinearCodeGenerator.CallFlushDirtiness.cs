@@ -101,8 +101,20 @@ public sealed partial class CxxLinearCodeGenerator
 
                     if (instruction is IrIndirectCall)
                     {
-                        gpr = allDirty;
-                        fpr = allDirty;
+                        if (GuestEabiVisibility.TrustFences)
+                        {
+                            // An EABI call to a target known only at run time
+                            // (ResidencyBoundarySync.EabiFencedCall): it publishes everything
+                            // that changed, reloads the results, and the rest is dead or restored.
+                            atCall[instruction] = (gpr, fpr);
+                            gpr = 0;
+                            fpr = 0;
+                        }
+                        else
+                        {
+                            gpr = allDirty;
+                            fpr = allDirty;
+                        }
                         continue;
                     }
 
