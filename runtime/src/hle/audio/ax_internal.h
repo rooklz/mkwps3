@@ -200,8 +200,11 @@ uint8_t ReadAramByteSlow(uint32_t addr);
 
 bool ResolveAramWindow(uint32_t addr, AramWindow& window);
 
+// The last window this thread resolved, shared by the single-byte and the run readers.
+inline thread_local AramWindow t_aramWindow{};
+
 inline uint8_t ReadAramByte(uint32_t addr) {
-    static thread_local AramWindow window{};
+    AramWindow& window = t_aramWindow;
     if (addr >= window.begin && addr < window.end &&
         window.generation == g_aramWindowGeneration.load(std::memory_order_relaxed)) {
         return window.host[addr - window.begin];
@@ -210,6 +213,21 @@ inline uint8_t ReadAramByte(uint32_t addr) {
         return window.host[addr - window.begin];
     }
     return ReadAramByteSlow(addr);
+}
+
+// Host pointer for `bytes` ARAM bytes from `addr` when they lie in one window, else nullptr
+// (the caller then reads them a byte at a time).
+inline const uint8_t* AramHostRange(uint32_t addr, uint32_t bytes) {
+    AramWindow& window = t_aramWindow;
+    if (!(addr >= window.begin && addr < window.end &&
+          window.generation == g_aramWindowGeneration.load(std::memory_order_relaxed)) &&
+        !ResolveAramWindow(addr, window)) {
+        return nullptr;
+    }
+    if (bytes > window.end - addr) {
+        return nullptr;
+    }
+    return window.host + (addr - window.begin);
 }
 
 enum class MailState {
@@ -533,6 +551,20 @@ public:
         m_yn1 = pb->adpcm.yn1;
         m_yn2 = pb->adpcm.yn2;
         m_reads_stopped = false;
+        LoadCoefficients();
+    }
+
+    // The decoder state goes back to the PB once, after the voice's samples are read: nothing
+    // reads it from the PB in between, and storing it per sample was most of the decode cost.
+    void Commit() {
+        if (!m_pb) {
+            return;
+        }
+        m_pb->audio_addr.cur_addr_hi = static_cast<uint16_t>(m_current >> 16);
+        m_pb->audio_addr.cur_addr_lo = static_cast<uint16_t>(m_current);
+        m_pb->adpcm.yn1 = m_yn1;
+        m_pb->adpcm.yn2 = m_yn2;
+        m_pb->adpcm.pred_scale = m_pred_scale;
     }
 
     int16_t ReadSample() {
@@ -548,9 +580,8 @@ public:
         if (decode == 0) {
             raw &= 0xf;
             int32_t nibble = raw >= 8 ? static_cast<int32_t>(raw) - 16 : static_cast<int32_t>(raw);
-            const int coef_idx = (m_pred_scale >> 4) & 0x7;
-            const int32_t coef1 = m_pb->adpcm.coefs[coef_idx * 2 + 0];
-            const int32_t coef2 = m_pb->adpcm.coefs[coef_idx * 2 + 1];
+            const int32_t coef1 = m_coef1;
+            const int32_t coef2 = m_coef2;
             const int32_t scale = 1 << (m_pred_scale & 0xf);
             const int32_t decoded = scale * nibble + ((0x400 + coef1 * m_yn1 + coef2 * m_yn2) >> 11);
             value = ClampAdpcmS16(decoded);
@@ -563,6 +594,7 @@ public:
                 m_current = m_start;
             } else if ((m_current & 15) == 0) {
                 m_pred_scale = ReadAram8((m_current & ~15u) >> 1) & 0x7f;
+                LoadCoefficients();
                 m_current += 2;
                 step += 2;
             }
@@ -570,9 +602,8 @@ public:
             int16_t pcm = static_cast<int16_t>(raw);
             const uint16_t gain_scale = (m_format >> 4) & 3u;
             uint8_t gain_shift = gain_scale == 1 ? 0 : (gain_scale == 2 ? 16 : 11);
-            const int coef_idx = (m_pred_scale >> 4) & 0x7;
-            const int32_t coef1 = m_pb->adpcm.coefs[coef_idx * 2 + 0];
-            const int32_t coef2 = m_pb->adpcm.coefs[coef_idx * 2 + 1];
+            const int32_t coef1 = m_coef1;
+            const int32_t coef2 = m_coef2;
             value = static_cast<int16_t>(((static_cast<int32_t>(m_gain) * pcm) >> gain_shift) +
                                          ((coef1 * m_yn1) >> gain_shift) +
                                          ((coef2 * m_yn2) >> gain_shift));
@@ -588,6 +619,7 @@ public:
             m_reads_stopped = true;
             if (m_pb->audio_addr.looping) {
                 m_pred_scale = m_pb->adpcm_loop_info.pred_scale & 0x7f;
+                LoadCoefficients();
                 if (m_pb->is_stream != 1) {
                     m_yn1 = static_cast<int16_t>(m_pb->adpcm_loop_info.yn1);
                     SetYn2(static_cast<int16_t>(m_pb->adpcm_loop_info.yn2));
@@ -602,13 +634,157 @@ public:
         // Mirrors DSPAccelerator::SetCurrentAddress's CURRENT_ADDRESS_MASK: keep only the
         // 30-bit ARAM address plus the 0x80000000 write flag.
         m_current &= 0xbfffffffu;
-
-        m_pb->audio_addr.cur_addr_hi = static_cast<uint16_t>(m_current >> 16);
-        m_pb->audio_addr.cur_addr_lo = static_cast<uint16_t>(m_current);
-        m_pb->adpcm.yn1 = m_yn1;
-        m_pb->adpcm.yn2 = m_yn2;
-        m_pb->adpcm.pred_scale = m_pred_scale;
         return value;
+    }
+
+    // ReadSample() n times, with the decoder state in locals for the whole run: as members of an
+    // object the resampler holds by reference, every field was loaded and stored per sample, a
+    // chain of load-hit-stores on the PPE.
+    void ReadSamples(int16_t* out, uint32_t n) {
+        AXPBWii* const pb = m_pb;
+        if (!pb) {
+            for (uint32_t i = 0; i < n; ++i) out[i] = 0;
+            return;
+        }
+        uint32_t current = m_current;
+        const uint32_t start = m_start;
+        const uint32_t end = m_end;
+        const uint16_t size = m_format & 3u;
+        const uint16_t decode = (m_format >> 2) & 3u;
+        const int32_t gain = m_gain;
+        const uint16_t gain_scale = (m_format >> 4) & 3u;
+        const uint8_t gain_shift = gain_scale == 1 ? 0 : (gain_scale == 2 ? 16 : 11);
+        int16_t yn1 = m_yn1;
+        int16_t yn2 = m_yn2;
+        uint16_t pred_scale = m_pred_scale;
+        int32_t coef1 = m_coef1;
+        int32_t coef2 = m_coef2;
+        bool stopped = m_reads_stopped;
+        auto coefficients = [&] {
+            const int coef_idx = (pred_scale >> 4) & 0x7;
+            coef1 = pb->adpcm.coefs[coef_idx * 2 + 0];
+            coef2 = pb->adpcm.coefs[coef_idx * 2 + 1];
+        };
+
+        const bool adpcm4 = size == 0 && decode == 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (stopped) {
+                // Nothing restarts a stopped voice within the call.
+                for (; i < n; ++i) out[i] = 0;
+                break;
+            }
+            if (adpcm4) {
+                // The samples up to the next frame header or the first end-of-data check
+                // (current reaching end - 1) need none of the checks below: decode them
+                // straight from the frame's bytes, two nibbles a byte, the sign extension and
+                // nibble select without branches. The sample after the run, if any, takes
+                // the full path.
+                uint32_t k = 15 - (current & 15);
+                const uint32_t room = end >= current + 2 ? end - 2 - current : 0;
+                k = std::min(std::min(k, room), n - i);
+                const uint8_t* src = k ? AramHostRange(current >> 1, ((current + k - 1) >> 1) - (current >> 1) + 1)
+                                       : nullptr;
+                if (src) {
+                    const int32_t scale = 1 << (pred_scale & 0xf);
+                    int32_t y1 = yn1;
+                    int32_t y2 = yn2;
+                    int16_t* dst = out + i;
+                    auto put = [&](int32_t nibble) {
+                        int32_t v = scale * nibble + ((0x400 + coef1 * y1 + coef2 * y2) >> 11);
+                        v = v < -0x7fff ? -0x7fff : (v > 0x7fff ? 0x7fff : v);
+                        y2 = y1;
+                        y1 = v;
+                        *dst++ = static_cast<int16_t>(v);
+                    };
+                    uint32_t left = k;
+                    if (current & 1) {
+                        put(static_cast<int32_t>((*src++ & 0xfu) ^ 8u) - 8);
+                        --left;
+                    }
+                    for (; left >= 2; left -= 2) {
+                        const uint32_t b = *src++;
+                        put(static_cast<int32_t>((b >> 4) ^ 8u) - 8);
+                        put(static_cast<int32_t>((b & 0xfu) ^ 8u) - 8);
+                    }
+                    if (left) {
+                        put(static_cast<int32_t>((*src >> 4) ^ 8u) - 8);
+                    }
+                    yn1 = static_cast<int16_t>(y1);
+                    yn2 = static_cast<int16_t>(y2);
+                    current += k;
+                    i += k;
+                    if (i == n) {
+                        break;
+                    }
+                }
+            }
+            uint16_t raw = 0;
+            if (size == 0) {
+                const uint8_t byte = ReadAramByte(current >> 1);
+                raw = (current & 1) ? (byte & 0xf) : (byte >> 4);
+            } else if (size == 1) {
+                raw = ReadAramByte(current);
+            } else if (size == 2) {
+                raw = static_cast<uint16_t>((ReadAramByte(current * 2) << 8) | ReadAramByte(current * 2 + 1));
+            }
+
+            int16_t value;
+            uint8_t step = 2;
+            if (decode == 0) {
+                raw &= 0xf;
+                const int32_t nibble = raw >= 8 ? static_cast<int32_t>(raw) - 16 : static_cast<int32_t>(raw);
+                const int32_t scale = 1 << (pred_scale & 0xf);
+                value = ClampAdpcmS16(scale * nibble + ((0x400 + coef1 * yn1 + coef2 * yn2) >> 11));
+                yn2 = yn1;
+                yn1 = value;
+                ++current;
+                if ((end & 0xf) == 0 && current == end) {
+                    current = start + 1;
+                } else if ((end & 0xf) == 1 && current == end - 1) {
+                    current = start;
+                } else if ((current & 15) == 0) {
+                    pred_scale = ReadAramByte((current & ~15u) >> 1) & 0x7f;
+                    coefficients();
+                    current += 2;
+                    step += 2;
+                }
+            } else {
+                const int16_t pcm = static_cast<int16_t>(raw);
+                value = static_cast<int16_t>(((gain * pcm) >> gain_shift) + ((coef1 * yn1) >> gain_shift) +
+                                             ((coef2 * yn2) >> gain_shift));
+                yn2 = yn1;
+                yn1 = value;
+                if (decode != 1) {
+                    ++current;
+                }
+            }
+
+            if (current == end + step - 1) {
+                current = start;
+                stopped = true;
+                if (pb->audio_addr.looping) {
+                    pred_scale = pb->adpcm_loop_info.pred_scale & 0x7f;
+                    coefficients();
+                    if (pb->is_stream != 1) {
+                        yn1 = static_cast<int16_t>(pb->adpcm_loop_info.yn1);
+                        yn2 = static_cast<int16_t>(pb->adpcm_loop_info.yn2);
+                    }
+                    stopped = false;
+                } else {
+                    pb->running = 0;
+                }
+            }
+            current &= 0xbfffffffu;
+            out[i] = value;
+        }
+
+        m_current = current;
+        m_yn1 = yn1;
+        m_yn2 = yn2;
+        m_pred_scale = pred_scale;
+        m_coef1 = coef1;
+        m_coef2 = coef2;
+        m_reads_stopped = stopped;
     }
 
     static uint8_t ReadAram8(uint32_t addr) {
@@ -616,6 +792,12 @@ public:
     }
 
 private:
+    void LoadCoefficients() {
+        const int coef_idx = (m_pred_scale >> 4) & 0x7;
+        m_coef1 = m_pb->adpcm.coefs[coef_idx * 2 + 0];
+        m_coef2 = m_pb->adpcm.coefs[coef_idx * 2 + 1];
+    }
+
     void SetYn2(int16_t yn2) {
         m_yn2 = yn2;
         m_reads_stopped = false;
@@ -645,6 +827,8 @@ private:
     int16_t m_yn1 = 0;
     int16_t m_yn2 = 0;
     uint16_t m_pred_scale = 0;
+    int32_t m_coef1 = 0;
+    int32_t m_coef2 = 0;
     bool m_reads_stopped = false;
 };
 

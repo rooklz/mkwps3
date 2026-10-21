@@ -29,6 +29,34 @@
 #include <string>
 #include <thread>
 
+// Timebase ticks the mix worker spent mixing and the guest thread spent waiting for it, for the
+// control port's stats.
+static std::atomic<uint64_t> g_mixWorkTicks{0};
+static std::atomic<uint64_t> g_mixJoinTicks{0};
+static std::atomic<uint64_t> g_mixVoices{0};
+
+static inline uint64_t MixTicks()
+{
+#if defined(__PPU__) || defined(__PS3__)
+    uint64_t tb;
+    __asm__ volatile("mftb %0" : "=r"(tb));
+    return tb;
+#else
+    return 0;
+#endif
+}
+
+#if defined(__PPU__) || defined(__PS3__)
+extern "C" int mkw_lv2_thread_set_priority(int priority);
+#endif
+
+extern "C" void mkw_mix_ticks(uint64_t* work, uint64_t* join, uint64_t* voices)
+{
+    *work = g_mixWorkTicks.load(std::memory_order_relaxed);
+    *join = g_mixJoinTicks.load(std::memory_order_relaxed);
+    *voices = g_mixVoices.load(std::memory_order_relaxed);
+}
+
 namespace AxDspHle {
 namespace {
 
@@ -74,7 +102,7 @@ public:
         MkwCrumb("ax: Initialize lock");
         std::lock_guard<std::mutex> lock(m_mutex);
         MkwCrumb("ax: Initialize config");
-        m_mixWorkerEnabled = RuntimeConfigFile::AudioMixWorkerEnabled(true);
+        m_mixWorkerEnabled = RuntimeConfigFile::AudioMixWorkerEnabled(false);
         MkwCrumb("ax: Initialize state");
         MarkDspInitialized();
         ResetDspTaskGlobals();
@@ -120,8 +148,10 @@ public:
 
     void JoinMix() {
         if (m_mixThread.joinable()) {
+            const uint64_t start = MixTicks();
             std::unique_lock<std::mutex> lock(m_mixMutex);
             m_mixIdle.wait(lock, [this] { return !m_mixPending && !m_mixBusy; });
+            g_mixJoinTicks.fetch_add(MixTicks() - start, std::memory_order_relaxed);
         }
         PublishAuxOutputs();
     }
@@ -365,7 +395,9 @@ private:
             return;
         }
 
+        const uint64_t start = MixTicks();
         ExecuteCommandList(m_mixLayout, m_mixCmdListSize);
+        g_mixWorkTicks.fetch_add(MixTicks() - start, std::memory_order_relaxed);
     }
 
     bool CanReadWords(uint32_t idx, uint32_t count) const {
@@ -653,6 +685,14 @@ private:
     void ProcessPBList(uint32_t pbAddr, bool newFilter, bool oldAxLayout) {
         uint32_t guard = 0;
         while (pbAddr && guard++ < 256) {
+            // Most of the chain is voices that are not playing, which ProcessVoice leaves
+            // untouched: the full read and write-back of those PBs was a third of the mix. The
+            // old ucode's per-millisecond updates can start a voice, so it keeps the full walk.
+            if (!oldAxLayout && m_pbLayout != PBLayout::Unknown &&
+                MixRead16(pbAddr + static_cast<uint32_t>(offsetof(AXPBWii, running))) != 1) {
+                pbAddr = Hilo(MixRead16(pbAddr), MixRead16(pbAddr + 2));
+                continue;
+            }
             AXPBWii pb{};
             ReadPB(pbAddr, pb);
             AXBuffers buffers = MixBuffers();
@@ -714,6 +754,18 @@ private:
             m_coeffs[i] = static_cast<int16_t>(word);
         }
         m_hasCoeffs = true;
+        // Four int16 taps times int16 samples sum within int32 when no row's absolute
+        // coefficients add up past 0xffff, which lets the resampler skip 64-bit multiplies.
+        m_coeffsFit32 = true;
+        for (size_t row = 0; row < m_coeffs.size(); row += 4) {
+            int32_t sum = 0;
+            for (size_t k = 0; k < 4; ++k) {
+                sum += std::abs(static_cast<int32_t>(m_coeffs[row + k]));
+            }
+            if (sum > 0xffff) {
+                m_coeffsFit32 = false;
+            }
+        }
     }
 
     static std::array<PBUpdate, 32> LoadPBUpdates(const AXPBWii& pb) {
@@ -1001,7 +1053,9 @@ private:
         Accelerator accel;
         accel.Setup(&pb);
         std::array<int16_t, kAxSamplesPerFrame> samples{};
-        Resample(accel, pb, samples.data(), count, coeffs);
+        Resample(accel, pb, samples.data(), count, coeffs, m_coeffsFit32);
+        accel.Commit();
+        g_mixVoices.fetch_add(1, std::memory_order_relaxed);
         // Same wrapping 16-bit ramp as MixAdd, minus the accumulate. The two's
         // complement wrap of the int16 envelope is bit-identical to the uint16
         // wrap the kernel performs, so the value stored back is unchanged.
@@ -1142,10 +1196,78 @@ private:
         return pos & 0xffffu;
     }
 
+    // ResampleAudio over samples already decoded into `line` (history first, see Resample).
+    // The same arithmetic, minus its four-entry ring: every ring slot was reloaded right after
+    // it was stored, a load-hit-store per tap on the PPE.
+    static uint32_t ResampleLine(const int16_t* line, int16_t* out, uint32_t count,
+                                 int16_t* lastSamples, uint32_t pos, uint32_t ratio, uint16_t srcType,
+                                 const int16_t* coeffs, bool coeffsFit32) {
+        uint32_t read = 0;
+        if (coeffs && srcType == 0) {
+            for (uint32_t i = 0; i < count; ++i) {
+                pos += ratio;
+                read += pos >> 16;
+                pos &= 0xffffu;
+                const int16_t* t = line + read;
+                const int16_t* c = coeffs + ((pos >> 9) << 2);
+                if (coeffsFit32) {
+                    out[i] = ClampS16((t[0] * c[0] + t[1] * c[1] + t[2] * c[2] + t[3] * c[3]) >> 15);
+                } else {
+                    out[i] = ClampS16((static_cast<int64_t>(t[0]) * c[0] + static_cast<int64_t>(t[1]) * c[1] +
+                                       static_cast<int64_t>(t[2]) * c[2] + static_cast<int64_t>(t[3]) * c[3]) >> 15);
+                }
+            }
+        } else if (srcType != 0 && srcType != 1) {
+            for (uint32_t i = 0; i < count; ++i) {
+                out[i] = line[4 + i];
+            }
+            if (count >= 4) {
+                std::memcpy(lastSamples, out + count - 4, sizeof(int16_t) * 4);
+            }
+            return pos;
+        } else {
+            for (uint32_t i = 0; i < count; ++i) {
+                pos += ratio;
+                read += pos >> 16;
+                pos &= 0xffffu;
+                const int16_t* t = line + read;
+                if (pos == 0) {
+                    out[i] = t[0];
+                } else {
+                    const int32_t s0 = t[0];
+                    const int32_t s1 = t[1];
+                    out[i] = static_cast<int16_t>((s0 * static_cast<uint16_t>(-pos) + s1 * static_cast<int32_t>(pos)) >> 16);
+                }
+            }
+        }
+        std::memcpy(lastSamples, line + read, sizeof(int16_t) * 4);
+        return pos;
+    }
+
     // `coeffs` is the DROM base; the bank is selected here, per voice, exactly
     // where GetInputSamples selects it.
     static void Resample(Accelerator& accel, AXPBWii& pb, int16_t* out, uint32_t count,
-                         const int16_t* coeffs) {
+                         const int16_t* coeffs, bool coeffsFit32) {
+        // The resampler consumes a number of source samples fixed by the ratio and the starting
+        // fraction (one per output sample when it does not interpolate). Decode exactly those in
+        // one run, then resample from the buffer: the same samples, read the same way.
+        const uint32_t ratio = Hilo(pb.src.ratio_hi, pb.src.ratio_lo);
+        const uint64_t needed = (pb.src_type == 0 || pb.src_type == 1)
+            ? (static_cast<uint64_t>(pb.src.cur_addr_frac) + static_cast<uint64_t>(count) * ratio) >> 16
+            : count;
+        constexpr uint32_t kMaxDecoded = 1024;
+        if (needed <= kMaxDecoded) {
+            // The four history samples, then the new ones: the four taps for an output
+            // sample are the four in a row ending at the newest sample read so far.
+            std::array<int16_t, kMaxDecoded + 4> line;
+            std::memcpy(line.data(), pb.src.last_samples, sizeof(int16_t) * 4);
+            accel.ReadSamples(line.data() + 4, static_cast<uint32_t>(needed));
+            pb.src.cur_addr_frac = static_cast<uint16_t>(ResampleLine(
+                line.data(), out, count, pb.src.last_samples,
+                pb.src.cur_addr_frac, ratio, pb.src_type, VoiceCoefficients(coeffs, pb.coef_select),
+                coeffsFit32));
+            return;
+        }
         pb.src.cur_addr_frac = static_cast<uint16_t>(ResampleAudio(
             [&accel](uint32_t) {
                 return accel.ReadSample();
@@ -1159,6 +1281,12 @@ private:
         // int16 x uint16 always fits in int32, so the 64-bit clamp the generic
         // helper performs is unnecessary here.
         const uint16_t delta = ramp ? vd.volume_delta : 0;
+        if (vd.volume == 0 && delta == 0) {
+            // Adds nothing; the kernel would leave only the last (zero) sample as the de-pop.
+            if (count != 0)
+                dpop = 0;
+            return;
+        }
         vd.volume = AxMixKernels::MixAddRamp(out, input, count, vd.volume, delta, dpop);
     }
 
@@ -1363,6 +1491,11 @@ private:
 
     void MixWorkerMain() {
         t_onMixWorker = true;
+#if defined(__PPU__) || defined(__PS3__)
+        // Above the guest and GPU threads (1000): the guest blocks on the mix every audio
+        // frame, so the worker must get the other hardware thread as soon as it is woken.
+        mkw_lv2_thread_set_priority(990);
+#endif
         for (;;) {
             {
                 std::unique_lock<std::mutex> lock(m_mixMutex);
@@ -1374,6 +1507,7 @@ private:
                 m_mixBusy = true;
             }
 
+            const uint64_t start = MixTicks();
             try {
                 ExecuteCommandList(m_mixLayout, m_mixCmdListSize);
             } catch (const std::exception& error) {
@@ -1382,6 +1516,7 @@ private:
                 ReportMixWorkerFailure("unknown exception");
             }
 
+            g_mixWorkTicks.fetch_add(MixTicks() - start, std::memory_order_relaxed);
             {
                 std::lock_guard<std::mutex> lock(m_mixMutex);
                 m_mixBusy = false;
@@ -1412,6 +1547,7 @@ private:
     AXCommandLayout m_commandLayout = AXCommandLayout::Auto;
     bool m_triedLoadCoeffs = false;
     bool m_hasCoeffs = false;
+    bool m_coeffsFit32 = false;
     std::array<int16_t, 0x800> m_coeffs{};
     // Indexed by AxBus. The wiimote buses live in their own array because they
     // are 18 samples per frame rather than 96.

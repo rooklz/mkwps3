@@ -259,9 +259,9 @@ inline void EnsureConfigFile() {
               "muted = false\n"
               "attenuate_music_when_media_plays = false\n"
               "# Runs the AX/DSP voice mix on its own thread, joined before the\n"
-              "# guest can observe it. Set to false to mix inline on the guest\n"
-              "# thread exactly as the runtime did before.\n"
-              "mix_worker = true\n\n"
+              "# guest can observe it. Off by default on the PS3: the mix is cheaper\n"
+              "# inline than sharing the PPE core with the game thread.\n"
+              "mix_worker = false\n\n"
               "[network]\n"
               "enabled = true\n\n"
               "[paths]\n"
@@ -735,7 +735,7 @@ inline bool AudioMuted(bool fallback = false) {
 }
 
 // Off-thread AX/DSP mix. Default on; false restores the fully synchronous mix.
-inline bool AudioMixWorkerEnabled(bool fallback = true) {
+inline bool AudioMixWorkerEnabled(bool fallback = false) {
     return Get().audioMixWorker.value_or(fallback);
 }
 

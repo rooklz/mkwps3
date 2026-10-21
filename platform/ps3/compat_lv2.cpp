@@ -184,6 +184,12 @@ int mkw_lv2_thread_join(uint64_t id)
 }
 
 void mkw_lv2_thread_exit(void) { sysThreadExit(0); }
+int mkw_lv2_thread_set_priority(int priority)
+{
+    sys_ppu_thread_t self = 0;
+    sysThreadGetId(&self);
+    return sysThreadSetPriority(self, priority);
+}
 void mkw_lv2_thread_yield(void) { sysThreadYield(); }
 
 uint64_t mkw_lv2_thread_self(void)
