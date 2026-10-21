@@ -151,6 +151,14 @@ public sealed partial class CxxLinearCodeGenerator
         // Condition-flag elision is planned once against the final IR so every
         // emission of this body (recording pass, public entry, state-free
         // fallback) suppresses exactly the same instruction positions.
+        var stateFreeTargets = new HashSet<uint>(stateFreeCallSymbols.Keys);
+        foreach (var key in stateFreeCallSiteVariants.Keys)
+        {
+            stateFreeTargets.Add(key.Target);
+        }
+        var callFlushDirtiness = PlanCallFlushDirtiness(
+            func, cfg, guestAbiContracts, modOverridableCallTargets,
+            nonReturningCallTargets, lrContinuationCallTargets, stateFreeTargets);
         var flagElision = PlanFlagElision(
             func, cfg, types, guestAbiContracts, modOverridableCallTargets,
             nonReturningCallTargets, lrContinuationCallTargets,
@@ -287,6 +295,8 @@ public sealed partial class CxxLinearCodeGenerator
             _markAddress = MarkAddressOf(func);
             var previousKeepsCallCr = _bodyKeepsCallCr;
             _bodyKeepsCallCr = keepsCallCr;
+            var previousCallFlushDirtiness = _callFlushDirtiness;
+            _callFlushDirtiness = callFlushDirtiness;
             var previousResidency = _activeResidency;
             var previousDirectCallTargets = _emittedDirectCallTargets;
             var previousLocalLabels = _emittedLocalLabelAddresses;
@@ -563,6 +573,7 @@ public sealed partial class CxxLinearCodeGenerator
                 _activeResidency = previousResidency;
                 _markAddress = previousMarkAddress;
                 _bodyKeepsCallCr = previousKeepsCallCr;
+                _callFlushDirtiness = previousCallFlushDirtiness;
                 _emittedDirectCallTargets = previousDirectCallTargets;
                 _emittedLocalLabelAddresses = previousLocalLabels;
                 _activeGpuFifoBurstSlot = previousFifoBurstSlot;

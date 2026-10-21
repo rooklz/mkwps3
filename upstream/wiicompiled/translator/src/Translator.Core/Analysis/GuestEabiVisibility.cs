@@ -78,6 +78,13 @@ public static class GuestEabiVisibility
     public static readonly bool NarrowsCallFlags =
         Enabled && Environment.GetEnvironmentVariable("MKW_EABI_CALL_FLAGS") != "0";
 
+    /// <summary>
+    /// A linked call flushes only the registers that may have changed since the context last held them
+    /// (<c>CxxLinearCodeGenerator.PlanCallFlushDirtiness</c>; <c>MKW_EABI_CALL_FLUSHES=0</c> disables).
+    /// </summary>
+    public static readonly bool NarrowsCallFlushes =
+        Enabled && Environment.GetEnvironmentVariable("MKW_EABI_CALL_FLUSHES") != "0";
+
     public const uint LocalGpr = 0xFFFFC000u;  // r14-r31
     public const uint LocalFpr = 0xFFFFC000u;  // f14-f31
 

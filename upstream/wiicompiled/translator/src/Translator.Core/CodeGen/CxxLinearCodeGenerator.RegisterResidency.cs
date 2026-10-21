@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Translator.Core.Analysis;
+using Translator.Core.Ir;
 
 namespace Translator.Core.CodeGen;
 
@@ -431,7 +432,8 @@ public sealed partial class CxxLinearCodeGenerator
         uint target,
         IReadOnlyDictionary<uint, GuestAbiContract> guestAbiContracts,
         IReadOnlySet<uint> modOverridableCallTargets,
-        bool linkedCall = false)
+        bool linkedCall = false,
+        IrInstruction? call = null)
     {
         if (_activeResidency is null ||
             modOverridableCallTargets.Contains(target) ||
@@ -466,6 +468,21 @@ public sealed partial class CxxLinearCodeGenerator
             if (_bodyKeepsCallCr && sync.FlushesCr && !sync.ReloadsCr)
             {
                 sync = sync with { FlushesCr = false };
+            }
+            // r0 is never an argument; a contract that shows it read is an artefact of a callee
+            // further down saving or passing along whatever was there.
+            if ((contract.GprPossibleWriteMask & 1u) == 0)
+            {
+                sync = sync with { FlushGprMask = sync.FlushGprMask & ~1u };
+            }
+            // Registers whose context copy is already current needn't be published again.
+            if (call is not null && _callFlushDirtiness is { } plan && plan.TryGetValue(call, out var dirty))
+            {
+                sync = sync with
+                {
+                    FlushGprMask = sync.FlushGprMask & dirty.Gpr,
+                    FlushFprMask = sync.FlushFprMask & dirty.Fpr
+                };
             }
         }
         return sync;
