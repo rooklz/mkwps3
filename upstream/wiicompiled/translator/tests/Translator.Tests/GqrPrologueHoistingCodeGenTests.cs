@@ -52,6 +52,26 @@ public class GqrPrologueHoistingCodeGenTests
     }
 
     [Fact]
+    public void ADisplacedPsqAccessTakesItsBaseAndDisplacementApart()
+    {
+        // The lifter's d-form address add right before the access hands over whole; one with
+        // anything in between still passes the address it computed.
+        var code = Emit(Function("displaced",
+            new IrBinary("r4_psq_tmp", IrValue.Register("r4"), IrValue.Imm(8), "add"),
+            PsqLoad(0, "r4_psq_tmp"),
+            new IrBinary("r5_psq_tmp", IrValue.Register("r5"), IrValue.Imm(-16), "add"),
+            PsqStore(0, "r5_psq_tmp"),
+            new IrBinary("r6_psq_tmp", IrValue.Register("r6"), IrValue.Imm(24), "add"),
+            new IrAssign("r6", IrValue.Imm(0)),
+            PsqLoad(0, "r6_psq_tmp"),
+            new IrReturn(null)));
+
+        Assert.Contains("PPC_PsqLGqrInline<0u, 0u>(ctx, mkw_gqr0, r4, 8)", code, StringComparison.Ordinal);
+        Assert.Contains("PPC_PsqStGqrInline<0u, 0u>(ctx, mkw_gqr0, r5, -16,", code, StringComparison.Ordinal);
+        Assert.Contains("PPC_PsqLGqrInline<0u, 0u>(ctx, mkw_gqr0, r6_psq_tmp", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EachUsedIndexGetsItsOwnLocalAndUnusedIndicesGetNone()
     {
         var code = Emit(Function("two_indices",

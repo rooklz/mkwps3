@@ -1,4 +1,8 @@
-﻿namespace Translator.Core.CodeGen;
+﻿using Translator.Core.Analysis.Representation;
+using Translator.Core.Representation;
+using Translator.Core.Ir;
+
+namespace Translator.Core.CodeGen;
 
 /// <summary>
 /// Selects the runtime helper family for guest memory accesses. Checked helpers resolve through the 1 MiB page
@@ -33,6 +37,47 @@ public sealed partial class CxxLinearCodeGenerator
         "MemoryInline::FlatWriteRamFloat8", "MemoryInline::FlatWriteRamFloat16",
         "MemoryInline::FlatWriteRamFloat32", "MemoryInline::FlatWriteRamFloat64"
     };
+
+    /// <summary>
+    /// Flat accessors take a guest displacement apart from its base (see <c>FlatAddressArguments</c>).
+    /// <c>MKW_FLAT_DISPLACEMENT=0</c> folds the effective address instead, for an A/B.
+    /// </summary>
+    private static bool FoldsDisplacementBase =>
+        Environment.GetEnvironmentVariable("MKW_FLAT_DISPLACEMENT") != "0";
+
+    /// <summary>
+    /// The lifter computes a paired-single access's d-form address into a <c>*_psq_*</c> temporary
+    /// right before the access. The add just emitted, and the one right before the instruction
+    /// being emitted, in the same block: the access then takes the base and displacement apart
+    /// (<see cref="PsqAddressArguments"/>).
+    /// </summary>
+    [ThreadStatic]
+    private static (string Label, string Temp, string Base, int Offset)? _psqAddressAdd;
+
+    [ThreadStatic]
+    private static (string Label, string Temp, string Base, int Offset)? _precedingPsqAddressAdd;
+
+    private static void NotePsqAddressAdd(string label, IrBinary bin, RepresentationEnvironment types)
+    {
+        if (bin.Op == "add" &&
+            bin.Destination.Contains("_psq_", StringComparison.Ordinal) &&
+            bin.Left.Kind == "register" && bin.Left.RegisterName is not null &&
+            bin.Right.Kind == "const" && bin.Right.Constant is >= short.MinValue and <= short.MaxValue)
+        {
+            _psqAddressAdd = (label, bin.Destination, ToExpression(bin.Left, types), (int)bin.Right.Constant.Value);
+        }
+    }
+
+    /// <summary>
+    /// The address arguments of a paired-single access whose address is <paramref name="address"/>:
+    /// the base and displacement of the add that computed it right before, so the base folds alone
+    /// as a plain access's does; otherwise <paramref name="fallback"/>, the address itself.
+    /// </summary>
+    private static string PsqAddressArguments(IrValue address, string fallback) =>
+        FoldsDisplacementBase && _precedingPsqAddressAdd is { } add &&
+        address.Kind == "register" && address.RegisterName == add.Temp
+            ? $"{add.Base}, {add.Offset}"
+            : fallback;
 
     private static int FlatHelperIndex(int bits) => bits switch
     {

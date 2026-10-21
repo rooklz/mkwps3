@@ -34,6 +34,9 @@ public sealed partial class CxxLinearCodeGenerator
             return; // Phi nodes are eliminated before codegen.
         }
 
+        _precedingPsqAddressAdd = _psqAddressAdd is { } add && add.Label == currentLabel ? add : null;
+        _psqAddressAdd = null;
+
         var pad = IndentPad(indent);
         switch (ins)
         {
@@ -58,6 +61,7 @@ public sealed partial class CxxLinearCodeGenerator
                 break;
             case IrBinary bin:
                 {
+                    NotePsqAddressAdd(currentLabel, bin, types);
                     var dest = ToDestination(bin.Destination, types);
                     var scalarFloatOperation = IsFloatRegister(bin.Destination);
                     var left = scalarFloatOperation
@@ -86,15 +90,15 @@ public sealed partial class CxxLinearCodeGenerator
                     }
                     else if (isFloatDest && load.SizeBytes == 4)
                     {
-                        sb.AppendLine($"{pad}{dest} = {GuestLoadHelper(4, isFloat: true)}({RemapAddress(load.Address, types, localConstants, linkedAddressRemap)});");
+                        sb.AppendLine($"{pad}{dest} = {GuestLoadHelper(4, isFloat: true)}({FlatAddressArguments(load.Address, types, localConstants, linkedAddressRemap)});");
                     }
                     else if (isFloatDest && load.SizeBytes == 8)
                     {
-                        sb.AppendLine($"{pad}{dest} = {GuestLoadHelper(8, isFloat: true)}({RemapAddress(load.Address, types, localConstants, linkedAddressRemap)});");
+                        sb.AppendLine($"{pad}{dest} = {GuestLoadHelper(8, isFloat: true)}({FlatAddressArguments(load.Address, types, localConstants, linkedAddressRemap)});");
                     }
                     else
                     {
-                        sb.AppendLine($"{pad}{dest} = {GuestLoadHelper(load.SizeBytes, isFloat: false)}({RemapAddress(load.Address, types, localConstants, linkedAddressRemap)});");
+                        sb.AppendLine($"{pad}{dest} = {GuestLoadHelper(load.SizeBytes, isFloat: false)}({FlatAddressArguments(load.Address, types, localConstants, linkedAddressRemap)});");
                     }
                     if (IsFloatRegister(load.Destination))
                     {
@@ -136,11 +140,11 @@ public sealed partial class CxxLinearCodeGenerator
                     }
                     else if (isFloatStore && store.SizeBytes == 4)
                     {
-                        sb.AppendLine($"{pad}{StoreHelper(4, isFloat: true)}({RemapAddress(store.Address, types, localConstants, linkedAddressRemap)}, {srcExpr});");
+                        sb.AppendLine($"{pad}{StoreHelper(4, isFloat: true)}({FlatAddressArguments(store.Address, types, localConstants, linkedAddressRemap)}, {srcExpr});");
                     }
                     else if (isFloatStore && store.SizeBytes == 8)
                     {
-                        sb.AppendLine($"{pad}{StoreHelper(8, isFloat: true)}({RemapAddress(store.Address, types, localConstants, linkedAddressRemap)}, {srcExpr});");
+                        sb.AppendLine($"{pad}{StoreHelper(8, isFloat: true)}({FlatAddressArguments(store.Address, types, localConstants, linkedAddressRemap)}, {srcExpr});");
                     }
                     else
                     {
@@ -155,7 +159,7 @@ public sealed partial class CxxLinearCodeGenerator
                             1 or 2 => $"static_cast<uint{Bits(store.SizeBytes)}_t>({srcExpr})",
                             _ => $"static_cast<uint32_t>({srcExpr})"
                         };
-                        sb.AppendLine($"{pad}{StoreHelper(store.SizeBytes, isFloat: false)}({RemapAddress(store.Address, types, localConstants, linkedAddressRemap)}, {integerSource});");
+                        sb.AppendLine($"{pad}{StoreHelper(store.SizeBytes, isFloat: false)}({FlatAddressArguments(store.Address, types, localConstants, linkedAddressRemap)}, {integerSource});");
                     }
                 }
                 break;
@@ -604,7 +608,7 @@ public sealed partial class CxxLinearCodeGenerator
             return false;
         }
 
-        var address = Address(load.Address, types);
+        var address = FlatAddressArguments(load.Address, types);
         if (isFloatDest && load.SizeBytes == 4)
         {
             sb.AppendLine($"{pad}{dest} = {StackLoadHelper(4, isFloat: true)}({address});");
@@ -634,7 +638,7 @@ public sealed partial class CxxLinearCodeGenerator
             return false;
         }
 
-        var address = Address(store.Address, types);
+        var address = FlatAddressArguments(store.Address, types);
         if (isFloatStore && store.SizeBytes == 4)
         {
             sb.AppendLine($"{pad}{StackStoreHelper(4, isFloat: true)}({address}, {srcExpr});");

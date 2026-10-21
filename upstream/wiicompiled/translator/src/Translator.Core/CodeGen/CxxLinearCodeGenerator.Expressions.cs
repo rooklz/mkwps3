@@ -328,8 +328,18 @@ public sealed partial class CxxLinearCodeGenerator
         IrAddress addr,
         RepresentationEnvironment types,
         IReadOnlyDictionary<string, uint> localConstants,
-        LinkedAddressRemap? remap)
+        LinkedAddressRemap? remap) =>
+        TryRemapAddress(addr, localConstants, remap, out var relocated)
+            ? $"0x{relocated:X8}u"
+            : Address(addr, types);
+
+    private static bool TryRemapAddress(
+        IrAddress addr,
+        IReadOnlyDictionary<string, uint> localConstants,
+        LinkedAddressRemap? remap,
+        out uint relocated)
     {
+        relocated = 0;
         if (remap is not null &&
             (localConstants.TryGetValue(addr.Base, out var baseValue) ||
              localConstants.TryGetValue(GetRegisterBaseName(addr.Base), out baseValue)))
@@ -338,12 +348,54 @@ public sealed partial class CxxLinearCodeGenerator
             var linkEnd = checked(remap.LinkBase + remap.CodeSize);
             if (effective >= remap.LinkBase && effective < linkEnd)
             {
-                var relocated = checked(remap.GuestBase + (effective - remap.LinkBase));
-                return $"0x{relocated:X8}u";
+                relocated = checked(remap.GuestBase + (effective - remap.LinkBase));
+                return true;
             }
         }
 
-        return Address(addr, types);
+        return false;
+    }
+
+    /// <summary>
+    /// The address arguments of a flat accessor: <c>base, offset</c> for a guest displacement, so the
+    /// runtime folds the base alone (<c>MemoryInline::GuestHost(base, disp)</c>). Every access through
+    /// one base value then shares a single fold and the offset rides in the host load or store's own
+    /// displacement field, where folding the effective address costs an add and a fold per access.
+    /// The two reach the same byte unless base and effective address straddle a 1 GiB boundary, which
+    /// a 16-bit displacement only does from outside the console's address map.
+    /// </summary>
+    private static string FlatAddressArguments(
+        IrAddress addr,
+        RepresentationEnvironment types,
+        IReadOnlyDictionary<string, uint> localConstants,
+        LinkedAddressRemap? remap)
+    {
+        if (TryRemapAddress(addr, localConstants, remap, out var relocated))
+        {
+            return $"0x{relocated:X8}u";
+        }
+
+        return FlatAddressArguments(addr, types);
+    }
+
+    private static string FlatAddressArguments(IrAddress addr, RepresentationEnvironment types)
+    {
+        var baseExpr = IsCpuRegister(addr.Base)
+            ? RegisterToReadExpression(addr.Base, types)
+            : addr.Base;
+        return FlatAddressArguments(baseExpr, addr.Offset);
+    }
+
+    private static string FlatAddressArguments(string baseExpr, int offset)
+    {
+        if (offset == 0)
+        {
+            return baseExpr;
+        }
+
+        return !FoldsDisplacementBase || offset is < short.MinValue or > short.MaxValue
+            ? $"({baseExpr} + {offset})"
+            : $"{baseExpr}, {offset}";
     }
 
     private static string BaseRegister(string name)

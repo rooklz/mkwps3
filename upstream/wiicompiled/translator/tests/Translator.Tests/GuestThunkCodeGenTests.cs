@@ -34,11 +34,11 @@ public sealed class GuestThunkCodeGenTests
             });
 
         Assert.Contains(
-            "MemoryInline::FlatWrite32((r11 + -72), static_cast<uint32_t>(r14));",
+            "MemoryInline::FlatWrite32(r11, -72, static_cast<uint32_t>(r14));",
             save,
             StringComparison.Ordinal);
         Assert.Contains(
-            "r14 = MemoryInline::FlatRead32((r11 + -72));",
+            "r14 = MemoryInline::FlatRead32(r11, -72);",
             restore,
             StringComparison.Ordinal);
         Assert.DoesNotContain("InvokeDirectCpu<0x8002156Cu>(ctx);", save, StringComparison.Ordinal);
@@ -58,11 +58,11 @@ public sealed class GuestThunkCodeGenTests
         var restore = Emit("fpr_restore", 0x80021544u, types);
 
         Assert.Contains(
-            "MemoryInline::FlatWriteFloat64((r11 + -72), f23.d);",
+            "MemoryInline::FlatWriteFloat64(r11, -72, f23.d);",
             save,
             StringComparison.Ordinal);
         Assert.Contains(
-            "f23.d = MemoryInline::FlatReadFloat64((r11 + -72));",
+            "f23.d = MemoryInline::FlatReadFloat64(r11, -72);",
             restore,
             StringComparison.Ordinal);
     }

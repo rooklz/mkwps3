@@ -97,6 +97,22 @@ inline uint8_t* WriteHost(uint32_t addr, uint32_t bytes)
     return MemoryInline::GuestHost(addr);
 }
 
+// The same for a guest d-form access, folding the base alone (see
+// MemoryInline::GuestHost(base, disp)).
+inline uint8_t* ReadHost(uint32_t base, int32_t disp, uint32_t bytes)
+{
+    (void)bytes;
+    return MemoryInline::GuestHost(base, disp);
+}
+
+inline uint8_t* WriteHost(uint32_t base, int32_t disp, uint32_t bytes)
+{
+    (void)bytes;
+    if (MemoryInline::FlatWriteNeedsPolicy(base))
+        return nullptr;
+    return MemoryInline::GuestHost(base, disp);
+}
+
 template <typename T>
 inline T HostRead(const uint8_t* p)
 {
@@ -408,6 +424,84 @@ template <uint32_t W, uint32_t I, uint32_t GQR>
 MKW_PPC_FORCE_INLINE void PPC_PsqStKnownStackInline(CpuContext*, uint32_t addr, FprVal value)
 {
     PsqDetail::StoreKnown<W, GQR>(MemoryInline::GuestHost(addr), addr, value);
+}
+
+// Every form above for a guest d-form access: the base and its displacement
+// apart, so the base folds once for all the accesses through it.
+template <uint32_t W, uint32_t I = 0u>
+MKW_PPC_FORCE_INLINE FprVal PPC_PsqLGqrInline(CpuContext*, uint32_t gqr, uint32_t base, int32_t disp)
+{
+    return PsqDetail::Load<W, I>(gqr, PsqDetail::ReadHost(base, disp, PsqDetail::Bytes<W>()), base + disp);
+}
+
+template <uint32_t W, uint32_t I = 0u>
+MKW_PPC_FORCE_INLINE void PPC_PsqStGqrInline(CpuContext*, uint32_t gqr, uint32_t base, int32_t disp, FprVal value)
+{
+    PsqDetail::Store<W, I>(gqr, PsqDetail::WriteHost(base, disp, PsqDetail::Bytes<W>()), base + disp, value);
+}
+
+template <uint32_t W, uint32_t I>
+MKW_PPC_FORCE_INLINE FprVal PPC_PsqLInline(CpuContext* cpu, uint32_t base, int32_t disp)
+{
+    return PPC_PsqLGqrInline<W, I>(cpu, cpu->gqr[I], base, disp);
+}
+
+template <uint32_t W, uint32_t I>
+MKW_PPC_FORCE_INLINE void PPC_PsqStInline(CpuContext* cpu, uint32_t base, int32_t disp, FprVal value)
+{
+    PPC_PsqStGqrInline<W, I>(cpu, cpu->gqr[I], base, disp, value);
+}
+
+template <uint32_t W, uint32_t I>
+MKW_PPC_FORCE_INLINE FprVal PPC_PsqLStackInline(CpuContext* cpu, uint32_t base, int32_t disp)
+{
+    return PsqDetail::Load<W, I>(cpu->gqr[I], MemoryInline::GuestHost(base, disp), base + disp);
+}
+
+template <uint32_t W, uint32_t I>
+MKW_PPC_FORCE_INLINE void PPC_PsqStStackInline(CpuContext* cpu, uint32_t base, int32_t disp, FprVal value)
+{
+    PsqDetail::Store<W, I>(cpu->gqr[I], MemoryInline::GuestHost(base, disp), base + disp, value);
+}
+
+template <uint32_t W, uint32_t I, bool Stack>
+MKW_PPC_FORCE_INLINE FprVal PPC_PsqLStateInline(uint32_t gqr, uint32_t base, int32_t disp)
+{
+    uint8_t* p = Stack ? MemoryInline::GuestHost(base, disp)
+                       : PsqDetail::ReadHost(base, disp, PsqDetail::Bytes<W>());
+    return PsqDetail::Load<W, I>(gqr, p, base + disp);
+}
+
+template <uint32_t W, uint32_t I, bool Stack>
+MKW_PPC_FORCE_INLINE void PPC_PsqStStateInline(uint32_t gqr, uint32_t base, int32_t disp, FprVal value)
+{
+    uint8_t* p = Stack ? MemoryInline::GuestHost(base, disp)
+                       : PsqDetail::WriteHost(base, disp, PsqDetail::Bytes<W>());
+    PsqDetail::Store<W, I>(gqr, p, base + disp, value);
+}
+
+template <uint32_t W, uint32_t I, uint32_t GQR>
+MKW_PPC_FORCE_INLINE FprVal PPC_PsqLKnownInline(CpuContext*, uint32_t base, int32_t disp)
+{
+    return PsqDetail::LoadKnown<W, GQR>(PsqDetail::ReadHost(base, disp, PsqDetail::Bytes<W>()), base + disp);
+}
+
+template <uint32_t W, uint32_t I, uint32_t GQR>
+MKW_PPC_FORCE_INLINE void PPC_PsqStKnownInline(CpuContext*, uint32_t base, int32_t disp, FprVal value)
+{
+    PsqDetail::StoreKnown<W, GQR>(PsqDetail::WriteHost(base, disp, PsqDetail::Bytes<W>()), base + disp, value);
+}
+
+template <uint32_t W, uint32_t I, uint32_t GQR>
+MKW_PPC_FORCE_INLINE FprVal PPC_PsqLKnownStackInline(CpuContext*, uint32_t base, int32_t disp)
+{
+    return PsqDetail::LoadKnown<W, GQR>(MemoryInline::GuestHost(base, disp), base + disp);
+}
+
+template <uint32_t W, uint32_t I, uint32_t GQR>
+MKW_PPC_FORCE_INLINE void PPC_PsqStKnownStackInline(CpuContext*, uint32_t base, int32_t disp, FprVal value)
+{
+    PsqDetail::StoreKnown<W, GQR>(MemoryInline::GuestHost(base, disp), base + disp, value);
 }
 
 // Resolved-range forms: a host pointer the translator resolved for the whole

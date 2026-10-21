@@ -93,7 +93,7 @@ public sealed partial class CxxLinearCodeGenerator
             if (TryGetConstArg(wIndex, out var knownW) && TryGetConstArg(iIndex, out var knownI) &&
                 knownW is 0 or 1 && knownI is >= 0 and < 8)
             {
-                var address = GetArg(0);
+                var address = PsqAddressArguments(call.Arguments[0], GetArg(0));
                 var stack = stackFacts.TryResolve(call.Arguments[0], out _);
                 // The guard's else-arm is the generic helper, so it takes the
                 // hoisted GQR local exactly like an unguarded generic site.
@@ -320,7 +320,7 @@ public sealed partial class CxxLinearCodeGenerator
                     loadW is 0 or 1 &&
                     loadI is >= 0 and < 8)
                 {
-                    var addr = GetArg(0);
+                    var addr = PsqAddressArguments(call.Arguments[0], GetArg(0));
                     var stackLoad = stackFacts.TryResolve(call.Arguments[0], out _);
                     EmitPairedResult(!stackLoad && IsGqrHoisted(loadI)
                         ? $"PPC_PsqLGqrInline<{loadW}u, {loadI}u>(ctx, {HoistedGqrName(loadI)}, {addr})"
@@ -335,7 +335,7 @@ public sealed partial class CxxLinearCodeGenerator
                     storeW is 0 or 1 &&
                     storeI is >= 0 and < 8)
                 {
-                    var addr = GetArg(0);
+                    var addr = PsqAddressArguments(call.Arguments[0], GetArg(0));
                     var value = WrapForPaired(1);
                     var stackStore = stackFacts.TryResolve(call.Arguments[0], out _);
                     sb.AppendLine(!stackStore && IsGqrHoisted(storeI)

@@ -88,6 +88,19 @@ MKW_MEMORY_FORCE_INLINE uint8_t* GuestHost(uint32_t address)
     return p;
 }
 
+// The host address of a guest d-form access, base + disp. Folding the base
+// alone lets every access through one base value share its fold, with the
+// displacement riding in the host load or store's own field. It reaches the
+// same byte as folding base + disp unless the two straddle a 1 GiB boundary,
+// which takes a displacement past either end of the console's address map.
+MKW_MEMORY_FORCE_INLINE uint8_t* GuestHost(uint32_t base, int32_t disp)
+{
+    uint8_t* const p = g_mkwGuestArena + Fold(base) + disp;
+    if (!p)
+        __builtin_unreachable();
+    return p;
+}
+
 // The architected stfs conversion: Gekko's and the PPE's are the same, so
 // this exists only for code that needs the bits rather than a store.
 MKW_MEMORY_FORCE_INLINE uint32_t ConvertPpcDoubleToSingleBits(double value)
@@ -364,12 +377,79 @@ MKW_MEMORY_FORCE_INLINE void FlatStore(uint32_t address, T value)
     std::memcpy(GuestHost(address), &value, sizeof(T));
 }
 
+template <typename T>
+MKW_MEMORY_FORCE_INLINE T FlatLoad(uint32_t base, int32_t disp)
+{
+    T value;
+    std::memcpy(&value, GuestHost(base, disp), sizeof(T));
+    return value;
+}
+
+template <typename T>
+MKW_MEMORY_FORCE_INLINE void FlatStore(uint32_t base, int32_t disp, T value)
+{
+    std::memcpy(GuestHost(base, disp), &value, sizeof(T));
+}
+
 MKW_MEMORY_FORCE_INLINE uint8_t FlatRead8(uint32_t address) { return FlatLoad<uint8_t>(address); }
 MKW_MEMORY_FORCE_INLINE uint16_t FlatRead16(uint32_t address) { return FlatLoad<uint16_t>(address); }
 MKW_MEMORY_FORCE_INLINE uint32_t FlatRead32(uint32_t address) { return FlatLoad<uint32_t>(address); }
 MKW_MEMORY_FORCE_INLINE uint64_t FlatRead64(uint32_t address) { return FlatLoad<uint64_t>(address); }
 MKW_MEMORY_FORCE_INLINE float FlatReadFloat32(uint32_t address) { return HostLoadFloat(GuestHost(address)); }
 MKW_MEMORY_FORCE_INLINE double FlatReadFloat64(uint32_t address) { return HostLoadDouble(GuestHost(address)); }
+
+// The same accessors for a guest d-form access (see GuestHost(base, disp)).
+// A store tests the base against the MMIO window: a displacement can't carry
+// an address the console maps into or out of it.
+MKW_MEMORY_FORCE_INLINE uint8_t FlatRead8(uint32_t base, int32_t disp) { return FlatLoad<uint8_t>(base, disp); }
+MKW_MEMORY_FORCE_INLINE uint16_t FlatRead16(uint32_t base, int32_t disp) { return FlatLoad<uint16_t>(base, disp); }
+MKW_MEMORY_FORCE_INLINE uint32_t FlatRead32(uint32_t base, int32_t disp) { return FlatLoad<uint32_t>(base, disp); }
+MKW_MEMORY_FORCE_INLINE uint64_t FlatRead64(uint32_t base, int32_t disp) { return FlatLoad<uint64_t>(base, disp); }
+MKW_MEMORY_FORCE_INLINE float FlatReadFloat32(uint32_t base, int32_t disp) { return HostLoadFloat(GuestHost(base, disp)); }
+MKW_MEMORY_FORCE_INLINE double FlatReadFloat64(uint32_t base, int32_t disp) { return HostLoadDouble(GuestHost(base, disp)); }
+
+MKW_MEMORY_FORCE_INLINE void FlatWrite8(uint32_t base, int32_t disp, uint8_t value)
+{
+    if (FlatWriteNeedsPolicy(base)) { Write8Slow(base + disp, value); return; }
+    FlatStore<uint8_t>(base, disp, value);
+}
+
+MKW_MEMORY_FORCE_INLINE void FlatWrite16(uint32_t base, int32_t disp, uint16_t value)
+{
+    if (FlatWriteNeedsPolicy(base)) { Write16Slow(base + disp, value); return; }
+    FlatStore<uint16_t>(base, disp, value);
+}
+
+MKW_MEMORY_FORCE_INLINE void FlatWrite32(uint32_t base, int32_t disp, uint32_t value)
+{
+    if (FlatWriteNeedsPolicy(base)) { Write32Slow(base + disp, value); return; }
+    FlatStore<uint32_t>(base, disp, value);
+}
+
+MKW_MEMORY_FORCE_INLINE void FlatWrite64(uint32_t base, int32_t disp, uint64_t value)
+{
+    if (FlatWriteNeedsPolicy(base)) { Write64Slow(base + disp, value); return; }
+    FlatStore<uint64_t>(base, disp, value);
+}
+
+MKW_MEMORY_FORCE_INLINE void FlatWriteFloat32(uint32_t base, int32_t disp, double value)
+{
+    if (FlatWriteNeedsPolicy(base)) { WriteFloat32Slow(base + disp, value); return; }
+    HostStoreSingle(GuestHost(base, disp), value);
+}
+
+MKW_MEMORY_FORCE_INLINE void FlatWriteFloat64(uint32_t base, int32_t disp, double value)
+{
+    if (FlatWriteNeedsPolicy(base)) { WriteFloat64Slow(base + disp, value); return; }
+    HostStoreDouble(GuestHost(base, disp), value);
+}
+
+MKW_MEMORY_FORCE_INLINE void FlatWriteRam8(uint32_t base, int32_t disp, uint8_t value) { FlatStore<uint8_t>(base, disp, value); }
+MKW_MEMORY_FORCE_INLINE void FlatWriteRam16(uint32_t base, int32_t disp, uint16_t value) { FlatStore<uint16_t>(base, disp, value); }
+MKW_MEMORY_FORCE_INLINE void FlatWriteRam32(uint32_t base, int32_t disp, uint32_t value) { FlatStore<uint32_t>(base, disp, value); }
+MKW_MEMORY_FORCE_INLINE void FlatWriteRam64(uint32_t base, int32_t disp, uint64_t value) { FlatStore<uint64_t>(base, disp, value); }
+MKW_MEMORY_FORCE_INLINE void FlatWriteRamFloat32(uint32_t base, int32_t disp, double value) { HostStoreSingle(GuestHost(base, disp), value); }
+MKW_MEMORY_FORCE_INLINE void FlatWriteRamFloat64(uint32_t base, int32_t disp, double value) { HostStoreDouble(GuestHost(base, disp), value); }
 
 MKW_MEMORY_FORCE_INLINE void FlatWrite8(uint32_t address, uint8_t value)
 {
