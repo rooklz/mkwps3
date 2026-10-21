@@ -606,14 +606,16 @@ void xf_light_constants(const XFState *xf, unsigned light, f32 out[20])
     const u32 *raw = &xf->mem[XF_LIGHT_BASE + (light & 7u) * 16u];
     unsigned k;
 
-    /* The colour is packed ABGR -- the *opposite* of the material and ambient
-     * registers below, which are RGBA. This is the single most consequential
-     * byte order in this file, and the reason it is here rather than inline in
-     * the backend is that here it can be tested. */
-    out[0] = (f32)( raw[3]        & 0xFFu) / 255.0f;
-    out[1] = (f32)((raw[3] >>  8) & 0xFFu) / 255.0f;
-    out[2] = (f32)((raw[3] >> 16) & 0xFFu) / 255.0f;
-    out[3] = (f32)((raw[3] >> 24) & 0xFFu) / 255.0f;
+    /* RGBA, red in the top byte, the same as the material and ambient
+     * registers below: GXInitLightColor stores the GXColor as one word.
+     * (Dolphin's "packed as abgr in u8[4]" describes that word's bytes on a
+     * little-endian host, which is why it swaps them back into RGBA.) This
+     * read the bytes the other way round, so a warm white light came out
+     * red-heavy, (1, 0.47, 0.53) for the karts' (0.53, 0.53, 0.47). */
+    out[0] = (f32)((raw[3] >> 24) & 0xFFu) / 255.0f;
+    out[1] = (f32)((raw[3] >> 16) & 0xFFu) / 255.0f;
+    out[2] = (f32)((raw[3] >>  8) & 0xFFu) / 255.0f;
+    out[3] = (f32)( raw[3]        & 0xFFu) / 255.0f;
 
     for (k = 0; k < 3; k++) out[4 + k]  = xf_float(raw[4 + k]);   /* cosatt  */
     out[7] = 0.0f;
