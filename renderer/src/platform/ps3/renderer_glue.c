@@ -155,8 +155,16 @@ static void prof_snapshot(void)
     s_prof_window_frames = 0;
 }
 
+/* The profiler costs two timebase reads per region, ~15,000 regions a race
+ * frame: off until the control port's `prof` first asks, then on for good. */
+static volatile int s_prof_wanted;
+
 const char *mkw_renderer_profile(void)
 {
+    if (!s_prof_wanted) {
+        s_prof_wanted = 1;
+        return "profiling from the next frame; ask again in a few seconds\n";
+    }
     return s_prof_report[0] ? s_prof_report : "no profile yet\n";
 }
 
@@ -274,7 +282,9 @@ static void frame_done(void *ctx)
     prof_exit();
     /* New frame: vertex arenas, constant caches and the texture fence. */
     gx_render_frame_begin();
-    if (++s_prof_window_frames >= 60)
+    if (s_prof_wanted && !g_prof.enabled)
+        prof_reset();       /* armed here so this thread owns it */
+    if (g_prof.enabled && ++s_prof_window_frames >= 60)
         prof_snapshot();
 }
 
@@ -419,7 +429,6 @@ static void sink_start(void *ctx)
     rsx_frame_begin();
     rsx_clear(0xFF000000u);
     gx_render_frame_begin();
-    prof_reset();   /* this thread owns the phase profiler */
     s_ready = 1;
     report_memory("after renderer init");
     printf("[gfx] RSX renderer up: %ux%u\n", (unsigned)g_rsx.width, (unsigned)g_rsx.height);
