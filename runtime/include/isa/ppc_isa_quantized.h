@@ -28,18 +28,36 @@ extern "C" void PPC_PsqSt(uint32_t addr, FprVal value, uint32_t w, uint32_t i);
 
 namespace PsqDetail {
 
-// 2^-scale for loads, 2^scale for stores; the 6-bit scale is signed.
-inline float DequantFactor(uint32_t scale)
+// 2^-scale for loads, 2^scale for stores; the 6-bit scale is signed. Tables, so a quantized
+// access doesn't call ldexp.
+constexpr float PowerOfTwo(int exponent)
 {
-    return scale < 32u ? std::ldexp(1.0f, -static_cast<int>(scale))
-                       : std::ldexp(1.0f, static_cast<int>(64u - scale));
+    float result = 1.0f;
+    for (; exponent > 0; --exponent) result *= 2.0f;
+    for (; exponent < 0; ++exponent) result *= 0.5f;
+    return result;
 }
 
-inline float QuantFactor(uint32_t scale)
+struct QuantTables {
+    float dequant[64];
+    float quant[64];
+};
+
+constexpr QuantTables MakeQuantTables()
 {
-    return scale < 32u ? std::ldexp(1.0f, static_cast<int>(scale))
-                       : std::ldexp(1.0f, -static_cast<int>(64u - scale));
+    QuantTables tables{};
+    for (int scale = 0; scale < 64; ++scale) {
+        const int exponent = scale < 32 ? scale : scale - 64;
+        tables.dequant[scale] = PowerOfTwo(-exponent);
+        tables.quant[scale] = PowerOfTwo(exponent);
+    }
+    return tables;
 }
+
+inline constexpr QuantTables kQuantTables = MakeQuantTables();
+
+inline float DequantFactor(uint32_t scale) { return kQuantTables.dequant[scale & 63u]; }
+inline float QuantFactor(uint32_t scale) { return kQuantTables.quant[scale & 63u]; }
 
 template <typename T>
 inline T QuantizeLane(double lane, uint32_t scale)
@@ -115,6 +133,24 @@ inline void StoreFloat(uint8_t* p, FprVal v)
 // ---- quantized (types 4-7) ----------------------------------------------
 
 template <uint32_t W, typename T>
+MKW_PPC_FORCE_INLINE FprVal LoadQuantizedInline(const uint8_t* p, uint32_t scale)
+{
+    const double ps0 = DequantizeLane(HostRead<T>(p), scale);
+    if constexpr (W == 0u)
+        return FprVal(ps0, DequantizeLane(HostRead<T>(p + sizeof(T)), scale));
+    else
+        return FprVal(ps0, 1.0);
+}
+
+template <uint32_t W, typename T>
+MKW_PPC_FORCE_INLINE void StoreQuantizedInline(uint8_t* p, FprVal v, uint32_t scale)
+{
+    HostWrite<T>(p, QuantizeLane<T>(v.ps0, scale));
+    if constexpr (W == 0u)
+        HostWrite<T>(p + sizeof(T), QuantizeLane<T>(v.ps1, scale));
+}
+
+template <uint32_t W, typename T>
 MKW_PPC_NO_INLINE MKW_PPC_COLD inline FprVal LoadQuantized(const uint8_t* p, uint32_t scale)
 {
     const double ps0 = DequantizeLane(HostRead<T>(p), scale);
@@ -173,11 +209,28 @@ MKW_PPC_NO_INLINE MKW_PPC_COLD inline void StoreGeneric(uint32_t gqr, uint8_t* p
 // The hot shape: a float GQR is one compare, then the lfs/stfs pair. GQR0 needs not even
 // the compare: it is the compiler's -- CodeWarrior moves plain paired singles through it --
 // and the OS sets it to 0 (unscaled float) in __PSInit and never changes it.
+//
+// The other GQRs are the game's quantized formats -- keyframe animation, the sin/cos table
+// index -- and their conversions are inline too: an out-of-line call made the caller spill
+// and reload every live volatile FPR around it, which cost more than the conversion. Only an
+// unbacked or MMIO address or a reserved type takes the generic path.
 template <uint32_t W, uint32_t I>
 MKW_PPC_FORCE_INLINE FprVal Load(uint32_t gqr, uint8_t* p, uint32_t addr)
 {
     if ((I == 0u || ((gqr >> 16) & 7u) == 0u) && p)
         return LoadFloat<W>(p);
+    if constexpr (I != 0u) {
+        if (p) {
+            const uint32_t scale = (gqr >> 24) & 0x3Fu;
+            switch ((gqr >> 16) & 7u) {
+            case 4u: return LoadQuantizedInline<W, uint8_t>(p, scale);
+            case 5u: return LoadQuantizedInline<W, uint16_t>(p, scale);
+            case 6u: return LoadQuantizedInline<W, int8_t>(p, scale);
+            case 7u: return LoadQuantizedInline<W, int16_t>(p, scale);
+            default: break;
+            }
+        }
+    }
     return LoadGeneric<W, I>(gqr, p, addr);
 }
 
@@ -187,6 +240,18 @@ MKW_PPC_FORCE_INLINE void Store(uint32_t gqr, uint8_t* p, uint32_t addr, FprVal 
     if ((I == 0u || (gqr & 7u) == 0u) && p) {
         StoreFloat<W>(p, v);
         return;
+    }
+    if constexpr (I != 0u) {
+        if (p) {
+            const uint32_t scale = (gqr >> 8) & 0x3Fu;
+            switch (gqr & 7u) {
+            case 4u: StoreQuantizedInline<W, uint8_t>(p, v, scale); return;
+            case 5u: StoreQuantizedInline<W, uint16_t>(p, v, scale); return;
+            case 6u: StoreQuantizedInline<W, int8_t>(p, v, scale); return;
+            case 7u: StoreQuantizedInline<W, int16_t>(p, v, scale); return;
+            default: break;
+            }
+        }
     }
     StoreGeneric<W, I>(gqr, p, addr, v);
 }
