@@ -105,7 +105,7 @@ screenshots, all without touching the PS3.
 5. Compile: `tools/build-ps3.sh` (it runs the toolchain in Docker). The output lands in
    `$GEN/build/ps3`.
 6. Install the app once, either from a package made by the easy route, or by hand:
-   `EBOOT.BIN`, `RELOAD.SELF`, `vtx_spu.elf` and `mkwii_sections.bin` in
+   `EBOOT.BIN`, `RELOAD.SELF`, `vtx_spu.elf`, `ax_spu.elf` and `mkwii_sections.bin` in
    `/dev_hdd0/game/MKWP00001/USRDIR/`, plus `dsp_coef.bin`, `wii_bootstrap/shared2/`, and
    the disc's `files/` and `sys/` under `USRDIR/DATA/` (`tools/push-data.py` uploads
    those over FTP).
@@ -129,7 +129,8 @@ The app listens on TCP port 4001. The scripts in `tools/` wrap it:
 | `ps3-shot.sh` | Saves a screenshot of the next frame |
 | `ps3-pad.sh` | Presses buttons on a virtual controller, for driving menus remotely |
 | `ps3-pcs.sh` | Samples where the game thread spends its time and prints a profile |
-| `bench-gp.sh` | The standard benchmark: drives into a 50cc Grand Prix and reports frame times |
+| `to-race.sh` | Drives the menus into a race and leaves it there (`AUTO=1`: the game's CPU driver races your kart) |
+| `bench-gp.sh` | The standard benchmark: a 50cc Grand Prix with the game's CPU driver racing your kart, reporting frame times |
 | `ps3-recover.sh` | Hard-reboots the console through webMAN and relaunches the app, for when the GPU has locked up |
 
 The log's `[stats]` line, every five seconds, is the quickest way to see how fast things
@@ -142,8 +143,10 @@ what the GPU did.
 # The translator's test suite (no game files needed)
 dotnet test upstream/wiicompiled/translator/Translator.sln -c Release
 
-# The audio decoder and resampler, checked against reference versions
+# The audio decoder and resampler, checked against reference versions, and the SPU
+# mixer checked against the C++ one
 make -C tests/audio
 ```
 
-Both run in CI on every push.
+Both run in CI on every push, along with shellcheck and a syntax check of the Python tools.
+[AGENTS.md](../AGENTS.md) has the full list of console commands and the PS3's pitfalls.
