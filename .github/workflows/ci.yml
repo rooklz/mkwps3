@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  translator:
+    name: Translator tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet test upstream/wiicompiled/translator/Translator.sln -c Release
+
+  audio:
+    name: Audio decoder tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C tests/audio CXX=g++
+
+  scripts:
+    name: Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts
+        run: shellcheck -S error build.sh tools/*.sh
+      - name: Python scripts
+        run: python3 -m py_compile tools/*.py

@@ -1,0 +1,77 @@
+name: Bug report
+description: Something's broken, or doesn't match the real game
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Please don't attach or link any game files, and if it also happens on a real Wii or in Dolphin, it's the game rather than the port.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: And what did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How do you make it happen?
+      description: Where in the game, what you pressed, and whether it happens every time.
+      placeholder: |
+        1. Grand Prix, 150cc, Mushroom Cup
+        2. Second lap of Moo Moo Meadows
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the game?
+      multiple: true
+      options:
+        - Starting up / intro movie
+        - Menus
+        - Racing
+        - Battle
+        - Graphics
+        - Sound or music
+        - Controls
+        - Saves
+        - Building the package
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: console
+    attributes:
+      label: Console and firmware
+      placeholder: e.g. CECHA fat, Evilnat 4.93 CFW / Slim 2000, HEN 3.4.0
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Which version did you build?
+      description: The commit, or the date you downloaded the code. `git rev-parse --short HEAD` prints it.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Attach `/dev_hdd0/tmp/mkwii-ps3.log` from the console (webMAN's file manager or FTP will get it). Drag the file in here.
+  - type: textarea
+    id: shots
+    attributes:
+      label: Screenshots or video
+      description: Photos of the TV are fine.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send it
+      options:
+        - label: I built this from my own clean PAL (RMCP01) copy of the game
+          required: true
+        - label: I've checked the open issues and this isn't already there
+          required: true

@@ -1,0 +1,14 @@
+name: Idea or request
+description: Something you'd like it to do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would it be useful?

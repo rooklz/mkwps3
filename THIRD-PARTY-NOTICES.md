@@ -25,15 +25,24 @@ Parts of the runtime's Riivolution support are ports of Dolphin code (marked
 in the files). Dolphin was also used as a behavioural reference for the GX,
 DSP and IOS implementations. <https://github.com/dolphin-emu/dolphin>
 
+## Fonts
+
+- **Michroma** - SIL Open Font License 1.1, Copyright (c) 2011 Vernon Adams. Used for the
+  type in `docs/press/`; the font file itself isn't included.
+
 ## Not included
 
 No game data, Nintendo or Sony SDK files, firmware, or console keys are part
-of this repository. The two runtime data files the port loads at run time
-(`dsp_coef.bin` and the WiiConnect24 first-run tree) are Dolphin's own freely
-licensed replacements and are fetched by the user from Dolphin's `Data/Sys`
-directory (see `README.md`).
+of this repository. The build pulls in, at build time and from their own
+projects, at pinned revisions (see `Dockerfile`):
+
+- Dolphin's freely licensed replacement DSP coefficient ROM (`dsp_coef.bin`) and
+  its default WiiConnect24 tree, both loaded by the runtime.
+- The PS3's homebrew package key, from PSL1GHT's packaging tools, used by
+  `tools/mkpkg.py` to write installable packages.
 
 ## Build-time dependencies, not redistributed
 
-- **PSL1GHT** and the ps3dev toolchain (open-source PS3 homebrew SDK).
+- **PSL1GHT** and **ps3toolchain** - the open-source PS3 homebrew SDK and compilers.
+- **nod** (nodtool) - MIT, for reading disc images.
 - **.NET 8 SDK** for the translator.

@@ -1,0 +1,87 @@
+# Publishes the Docker images build.sh uses, for both x86-64 and ARM (Apple Silicon)
+# machines: the PS3 toolchain (rarely changes, about an hour to build) and the builder
+# on top of it.
+name: Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: Rebuild the toolchain image even if it already exists
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  TOOLCHAIN: ghcr.io/${{ github.repository_owner }}/ps3-toolchain:gcc7.2-psl1ght-f649a08
+  BUILDER: ghcr.io/${{ github.repository_owner }}/mkwps3-builder
+
+jobs:
+  toolchain:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          if [ "${{ inputs.toolchain }}" != "true" ] && docker manifest inspect "$TOOLCHAIN-${{ matrix.arch }}" > /dev/null 2>&1; then
+            echo "toolchain image already published"
+            exit 0
+          fi
+          docker build -f docker/toolchain.Dockerfile -t "$TOOLCHAIN-${{ matrix.arch }}" .
+          docker push "$TOOLCHAIN-${{ matrix.arch }}"
+
+  builder:
+    needs: toolchain
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          docker build --build-arg "TOOLCHAIN=$TOOLCHAIN-${{ matrix.arch }}" -t "$BUILDER:${{ github.sha }}-${{ matrix.arch }}" .
+          docker push "$BUILDER:${{ github.sha }}-${{ matrix.arch }}"
+
+  manifests:
+    needs: builder
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Multi-arch tags
+        run: |
+          docker buildx imagetools create -t "$TOOLCHAIN" "$TOOLCHAIN-amd64" "$TOOLCHAIN-arm64"
+          tags="-t $BUILDER:latest -t $BUILDER:${{ github.sha }}"
+          case "$GITHUB_REF" in refs/tags/v*) tags="$tags -t $BUILDER:${GITHUB_REF#refs/tags/}" ;; esac
+          docker buildx imagetools create $tags "$BUILDER:${{ github.sha }}-amd64" "$BUILDER:${{ github.sha }}-arm64"
