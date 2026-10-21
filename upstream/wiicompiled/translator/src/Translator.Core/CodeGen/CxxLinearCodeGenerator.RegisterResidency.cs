@@ -469,6 +469,11 @@ public sealed partial class CxxLinearCodeGenerator
             {
                 sync = sync with { FlushesCr = false };
             }
+            // Nor is CTR, which the EABI leaves volatile; and the narrowed contract never writes it.
+            if (!sync.ReloadsCtr)
+            {
+                sync = sync with { FlushesCtr = false };
+            }
             // r0 is never an argument; a contract that shows it read is an artefact of a callee
             // further down saving or passing along whatever was there.
             if ((contract.GprPossibleWriteMask & 1u) == 0)

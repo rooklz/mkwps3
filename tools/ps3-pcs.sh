@@ -1,6 +1,8 @@
 #!/bin/sh
 # ps3-pcs.sh [secs] [top] -- sample the running app's guest and GPU threads and
-# print a per-function profile.
+# print a per-function profile. The inclusive and top-down views walk the guest
+# stack's saved return addresses, which a normal build doesn't keep up to date:
+# for those, translate with MKW_GUEST_STACKS=1 and profile that build.
 . "$(dirname "$0")/local.env" 2>/dev/null || true
 SECS=${1:-5}
 TOP=${2:-25}

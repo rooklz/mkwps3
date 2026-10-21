@@ -660,23 +660,97 @@ public class FlagElisionCodeGenTests
         Assert.Contains("ctx->lr = 2147487760;", code, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AFrameSavingPrologueDoesNotReadTheLinkRegister()
+    {
+        // stwu r1,-32(r1); mflr r0; ...; stw r0,36(r1); ...; r0 redefined.
+        var callee = new IrFunction("frame_saver", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrStore(new IrAddress("r1", -32), IrValue.Register("r1"), 4),
+                new IrBinary("r1", IrValue.Register("r1"), IrValue.Imm(-32), "add"),
+                new IrAssign("r0", IrValue.Register("lr")),
+                new IrAssign("r4", IrValue.Imm(0x802C0000)),
+                new IrStore(new IrAddress("r1", 36), IrValue.Register("r0"), 4),
+                new IrStore(new IrAddress("r1", 28), IrValue.Register("r31"), 4),
+                new IrBinary("r0", IrValue.Register("r5"), IrValue.Imm(1), "and"),
+                new IrLoad("r0", new IrAddress("r1", 36), 4),
+                new IrAssign("lr", IrValue.Register("r0")),
+                new IrBinary("r1", IrValue.Register("r1"), IrValue.Imm(32), "add"),
+                new IrReturn(null)
+            })
+        });
+
+        Assert.False(GuestAbiContractAnalyzer.Analyze(callee).ReadsLrBeforeWrite);
+    }
+
+    [Fact]
+    public void AnEpilogueMtlrBeforeTheReturnIsDropped()
+    {
+        // lwz r0,36(r1); mtlr r0; blr: a caller never reads LR after a call.
+        var function = new IrFunction("func_80001000", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrLoad("r0", new IrAddress("r1", 36), 4),
+                new IrAssign("lr", IrValue.Register("r0")),
+                new IrReturn(null)
+            })
+        });
+
+        Assert.DoesNotContain("ctx->lr = r0;", Emit(function), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnMflrUsedForMoreThanTheFrameSaveStillReadsTheLinkRegister()
+    {
+        // bl's return address taken as data: the read is real.
+        var function = new IrFunction("lr_as_data", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrAssign("r0", IrValue.Register("lr")),
+                new IrStore(new IrAddress("r1", 4), IrValue.Register("r0"), 4),
+                new IrBinary("r3", IrValue.Register("r0"), IrValue.Imm(4), "add"),
+                new IrReturn(null)
+            })
+        });
+
+        Assert.True(GuestAbiContractAnalyzer.Analyze(function).ReadsLrBeforeWrite);
+    }
+
+    [Fact]
+    public void LinkRegisterStoreIsKeptForACalleeThatWantsTheWholeContext()
+    {
+        // A native that takes the complete context may read the architectural return address.
+        var code = Emit(
+            CallWithLinkRegister("escaping_callee", 0x80002000u),
+            guestAbiContracts: new Dictionary<uint, GuestAbiContract>
+            {
+                [0x80002000u] = Contract(flags: GuestCallBoundaryFlags.RequiresCompleteContext)
+            });
+
+        Assert.Contains("ctx->lr = 2147487760;", code, StringComparison.Ordinal);
+    }
+
     [Theory]
-    [InlineData(GuestCallBoundaryFlags.RequiresCompleteContext)]
     [InlineData(GuestCallBoundaryFlags.CanSuspend)]
     [InlineData(GuestCallBoundaryFlags.CanSwitchThreads)]
     [InlineData(GuestCallBoundaryFlags.InvokesGuestCode)]
-    public void LinkRegisterStoreIsKeptForACalleeThatEscapesAnalysis(GuestCallBoundaryFlags flags)
+    public void ACalleeThatReentersGuestCodeStillHasNoUseForTheReturnAddress(GuestCallBoundaryFlags flags)
     {
-        // setjmp-style natives (OSSaveContext) and anything that re-enters guest
-        // code can observe the architectural return address.
+        // Guest code it runs reads LR only to save its own (GuestEabiVisibility.ElidesFrameLr):
+        // setjmp-style code that keeps the architectural return address lives in the
+        // OSContext range, which EABI trust leaves alone.
         var code = Emit(
-            CallWithLinkRegister("escaping_callee", 0x80002000u),
+            CallWithLinkRegister("reentering_callee", 0x80002000u),
             guestAbiContracts: new Dictionary<uint, GuestAbiContract>
             {
                 [0x80002000u] = Contract(flags: flags)
             });
 
-        Assert.Contains("ctx->lr = 2147487760;", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("ctx->lr = 2147487760;", code, StringComparison.Ordinal);
     }
 
     [Fact]

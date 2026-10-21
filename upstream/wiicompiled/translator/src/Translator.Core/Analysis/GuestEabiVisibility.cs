@@ -82,6 +82,16 @@ public static class GuestEabiVisibility
     /// A linked call flushes only the registers that may have changed since the context last held them
     /// (<c>CxxLinearCodeGenerator.PlanCallFlushDirtiness</c>; <c>MKW_EABI_CALL_FLUSHES=0</c> disables).
     /// </summary>
+    /// <summary>
+    /// A compiled function reads LR only to save it in its own stack frame for the return, and a
+    /// translated function returns through the host stack, so that save is the only reader: a caller
+    /// needn't publish the return address and a body needn't publish LR at its return. The saved
+    /// slots then hold stale addresses, which only a guest stack walk would read: a build for
+    /// <c>tools/ps3-pcs.sh</c> stacks is translated with <c>MKW_GUEST_STACKS=1</c>.
+    /// </summary>
+    public static readonly bool ElidesFrameLr =
+        Enabled && Environment.GetEnvironmentVariable("MKW_GUEST_STACKS") != "1";
+
     public static readonly bool NarrowsCallFlushes =
         Enabled && Environment.GetEnvironmentVariable("MKW_EABI_CALL_FLUSHES") != "0";
 

@@ -197,16 +197,61 @@ public sealed partial class CxxLinearCodeGenerator
                 for (var index = 0; index + 1 < block.Instructions.Count; ++index)
                 {
                     if (block.Instructions[index] is not IrAssign { Value.Kind: "const" } assign ||
-                        !GetRegisterBaseName(assign.Destination).Equals("lr", StringComparison.OrdinalIgnoreCase) ||
-                        block.Instructions[index + 1] is not IrCall call ||
-                        !CalleeIgnoresLinkRegister(
+                        !GetRegisterBaseName(assign.Destination).Equals("lr", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    var next = block.Instructions[index + 1];
+                    // A call through a register reaches an EABI function too, which reads LR only to
+                    // save it in its frame (GuestEabiVisibility.ElidesFrameLr).
+                    var ignored = next is IrCall call
+                        ? CalleeIgnoresLinkRegister(
                             call, guestAbiContracts, modOverridableCallTargets,
-                            nonReturningCallTargets, lrContinuationCallTargets))
+                            nonReturningCallTargets, lrContinuationCallTargets)
+                        : next is IrIndirectCall && GuestEabiVisibility.ElidesFrameLr && GuestEabiVisibility.TrustFences;
+                    if (!ignored)
                     {
                         continue;
                     }
 
                     suppressed.Add((block.Label, index));
+                }
+            }
+        }
+
+        // The epilogue's mtlr before a return: a caller never reads LR after a call, it loads its
+        // own before the next one, so unless this body hands its caller a place to resume (an LR
+        // continuation) the write is dead (GuestEabiVisibility.ElidesFrameLr).
+        if (GuestEabiVisibility.ElidesFrameLr && MarkAddressOf(function) is { } bodyAddress &&
+            GuestEabiVisibility.Applies(bodyAddress) &&
+            !lrContinuationCallTargets.Contains(bodyAddress) && !nonReturningCallTargets.Contains(bodyAddress))
+        {
+            foreach (var block in function.Blocks)
+            {
+                var instructions = block.Instructions;
+                if (instructions.Count == 0 || instructions[^1] is not IrReturn)
+                {
+                    continue;
+                }
+
+                for (var index = instructions.Count - 2; index >= 0; --index)
+                {
+                    var instruction = instructions[index];
+                    if (instruction is IrCall or IrIndirectCall or IrIndirectJump or IrUndefined)
+                    {
+                        break;
+                    }
+                    if (instruction is IrAssign assign &&
+                        GetRegisterBaseName(assign.Destination).Equals("lr", StringComparison.OrdinalIgnoreCase))
+                    {
+                        suppressed.Add((block.Label, index));
+                        break;
+                    }
+                    if (IrRegisterDataFlow.Uses(instruction).Any(use =>
+                            RegisterNameUtils.HardwareBase(use).Equals("lr", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -274,11 +319,16 @@ public sealed partial class CxxLinearCodeGenerator
             return false;
         }
 
-        const GuestCallBoundaryFlags escaping =
-            GuestCallBoundaryFlags.RequiresCompleteContext |
-            GuestCallBoundaryFlags.CanSuspend |
-            GuestCallBoundaryFlags.CanSwitchThreads |
-            GuestCallBoundaryFlags.InvokesGuestCode;
+        // Once a frame-save mflr no longer counts as reading LR (GuestEabiVisibility.ElidesFrameLr),
+        // a callee that suspends, switches threads or runs other guest code still has no use for
+        // the return address; only one that wants the whole context (a native that may read
+        // ctx->lr) does.
+        var escaping = GuestEabiVisibility.ElidesFrameLr && GuestEabiVisibility.Applies(target)
+            ? GuestCallBoundaryFlags.RequiresCompleteContext
+            : GuestCallBoundaryFlags.RequiresCompleteContext |
+              GuestCallBoundaryFlags.CanSuspend |
+              GuestCallBoundaryFlags.CanSwitchThreads |
+              GuestCallBoundaryFlags.InvokesGuestCode;
 
         return !contract.ReadsLrBeforeWrite && (contract.BoundaryFlags & escaping) == 0;
     }
