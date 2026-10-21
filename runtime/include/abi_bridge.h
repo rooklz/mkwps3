@@ -295,6 +295,7 @@ struct KnownNativeCpuCall {
 template <uint32_t Target>
 struct KnownTypedNativeCpuCall {
     static constexpr bool kAvailable = false;
+    static constexpr bool kLeaf = false;
 };
 
 #include "native_cpu_calls.inc"
@@ -573,7 +574,10 @@ inline void InvokeDirectCpu(CpuContext* ctx) {
         return;
     }
 
-    if constexpr (KnownTypedNativeCpuCall<Target>::kAvailable) {
+    if constexpr (KnownTypedNativeCpuCall<Target>::kAvailable && KnownTypedNativeCpuCall<Target>::kLeaf) {
+        KnownTypedNativeCpuCall<Target>::Invoke(cpu);
+        return;
+    } else if constexpr (KnownTypedNativeCpuCall<Target>::kAvailable) {
         PpcNonvolatileGprGuard gprGuard(cpu);
         if (TryGetCpuContext() != cpu) {
             CpuContextScope scope(cpu);

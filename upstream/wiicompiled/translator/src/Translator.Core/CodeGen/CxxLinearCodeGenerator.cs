@@ -119,7 +119,7 @@ public sealed partial class CxxLinearCodeGenerator
         // call boundary preserves the PPC nonvolatile value.
         var leafGprStackFunction = ssa.Function;
         var leafStackFunction = elideLeafAbiSpills
-            ? ElideLeafStackFprSaveRestore(leafGprStackFunction, types)
+            ? ForwardStackGprRestores(ElideLeafStackFprSaveRestore(leafGprStackFunction, types), types)
             : leafGprStackFunction;
         var func = ElideDeadPureLocalTemps(
             ElideFctiwStackLowWordLoads(

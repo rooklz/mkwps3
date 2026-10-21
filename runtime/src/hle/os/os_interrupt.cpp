@@ -50,30 +50,37 @@ inline void UpdateCurrentContextInterruptFlag(bool enabled)
 } // namespace
 
 // Minimal, host-side replacements for early OS interrupt/exception helpers.
+//
+// The flag is only ever touched on the guest thread (every reader is a safe point on it), so plain
+// relaxed accesses do: the sound code disables and restores interrupts thousands of times a frame,
+// and a sequentially consistent exchange is a lwarx/stwcx. loop between two sync barriers.
 extern "C" int32_t OS__DisableInterrupts_801a65ac()
 {
-    const bool previous = g_interrupts_enabled.exchange(false);
+    const bool previous = g_interrupts_enabled.load(std::memory_order_relaxed);
+    g_interrupts_enabled.store(false, std::memory_order_relaxed);
     UpdateCurrentContextInterruptFlag(false);
     return previous ? 1 : 0;
 }
 
 extern "C" int32_t OS__RestoreInterrupts_801a65d4(int32_t level)
 {
-    const bool prev = g_interrupts_enabled.exchange(level != 0);
+    const bool prev = g_interrupts_enabled.load(std::memory_order_relaxed);
+    g_interrupts_enabled.store(level != 0, std::memory_order_relaxed);
     UpdateCurrentContextInterruptFlag(level != 0);
     return prev ? 1 : 0;
 }
 
 extern "C" int32_t OS__EnableInterrupts_801a65c0()
 {
-    const bool prev = g_interrupts_enabled.exchange(true);
+    const bool prev = g_interrupts_enabled.load(std::memory_order_relaxed);
+    g_interrupts_enabled.store(true, std::memory_order_relaxed);
     UpdateCurrentContextInterruptFlag(true);
     return prev ? 1 : 0;
 }
 
 bool OS_HLE_InterruptsEnabled() noexcept
 {
-    return g_interrupts_enabled.load(std::memory_order_acquire);
+    return g_interrupts_enabled.load(std::memory_order_relaxed);
 }
 
 extern "C" uint32_t OS____InterruptInit_801a661c(uint32_t r3, uint32_t r4, uint32_t r5, uint32_t r6, uint32_t r7, uint32_t r8)

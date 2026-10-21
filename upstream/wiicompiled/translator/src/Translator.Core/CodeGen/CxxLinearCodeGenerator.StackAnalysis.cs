@@ -31,14 +31,19 @@ public sealed partial class CxxLinearCodeGenerator
         public List<InstructionSite> PsqLoads { get; } = new();
     }
 
-    /// <summary>Replaces a leaf function's private ABI FPR stack spill with a native local. Requires
+    /// <summary>Replaces a function's private ABI FPR stack spill with a native local. Requires
     /// one entry save, one epilogue restore, one return, no overlapping stack access, and, for paired
-    /// saves, canonical scalar+PSQ save / PSQ+scalar restore order.</summary>
+    /// saves, canonical scalar+PSQ save / PSQ+scalar restore order.
+    ///
+    /// Calls are fine: a callee only ever sees its own frame below this one, never this frame's save
+    /// area. What is not fine is a body that leaves through a dispatch -- a tail jump or a jump table
+    /// whose misses jump away -- since the code it reaches may be a case block of this same function
+    /// that restores from those slots.</summary>
     private static IrFunction ElideLeafStackFprSaveRestore(
         IrFunction func,
         RepresentationEnvironment types)
     {
-        if (!FunctionEligibleForLeafRegisterCache(func))
+        if (!FunctionEligibleForStackFprElision(func))
             return func;
 
         var stackFacts = StackAddressFacts.Build(func);
@@ -247,6 +252,151 @@ public sealed partial class CxxLinearCodeGenerator
     }
 
     private static string LeafStackSavedFprName(int fpr) => $"leaf_stack_saved_f{fpr}_entry";
+
+    private static string StackSavedGprName(int gpr) => $"stack_saved_r{gpr}_entry";
+
+    /// <summary>
+    /// The GPR half of the save/restore: an epilogue load of a nonvolatile GPR from the slot the
+    /// prologue stored it to takes the value from a native local instead. The store stays, so the
+    /// frame still holds it; only the reload goes, and on the PPE a reload that closely follows its
+    /// store (any short function) is a load-hit-store. Same conditions as the FPR elision, and a body
+    /// that saves through the out-of-line save/restore helpers is left alone.
+    /// </summary>
+    private static IrFunction ForwardStackGprRestores(IrFunction func, RepresentationEnvironment types)
+    {
+        if (!FunctionEligibleForStackFprElision(func))
+            return func;
+
+        var stackFacts = StackAddressFacts.Build(func);
+        var stackAccesses = new List<StackAccess>();
+        var stores = new Dictionary<(int Gpr, int Offset), List<InstructionSite>>();
+        var loads = new Dictionary<(int Gpr, int Offset), List<InstructionSite>>();
+        var returnSites = new List<InstructionSite>();
+        var orderedInstructions = new List<(InstructionSite Site, IrInstruction Instruction)>();
+
+        var order = 0;
+        foreach (var block in func.Blocks)
+        {
+            for (var index = 0; index < block.Instructions.Count; ++index, ++order)
+            {
+                var instruction = block.Instructions[index];
+                var site = new InstructionSite(block.Label, index, order);
+                orderedInstructions.Add((site, instruction));
+                switch (instruction)
+                {
+                    case IrReturn:
+                        returnSites.Add(site);
+                        break;
+                    case IrStore store when stackFacts.TryResolve(store.Address, out var storeOffset):
+                        stackAccesses.Add(new StackAccess(site, storeOffset, store.SizeBytes));
+                        if (store.SizeBytes == 4 && store.Source.Kind == "register" &&
+                            TryParseNonvolatileGpr(store.Source.RegisterName, out var storedGpr))
+                            Add(stores, (storedGpr, storeOffset), site);
+                        break;
+                    case IrLoad load when stackFacts.TryResolve(load.Address, out var loadOffset):
+                        stackAccesses.Add(new StackAccess(site, loadOffset, load.SizeBytes));
+                        if (load.SizeBytes == 4 && TryParseNonvolatileGpr(load.Destination, out var loadedGpr))
+                            Add(loads, (loadedGpr, loadOffset), site);
+                        break;
+                    case IrCall call when TryParseAddress(call.Target, out var target) &&
+                                          TryGetInlineGuestThunkSpec(target, out _):
+                        return func;
+                    case IrCall call when TryGetPsqStackAccess(call, stackFacts, out var psq):
+                        stackAccesses.Add(new StackAccess(site, psq.Offset, psq.SizeBytes));
+                        break;
+                }
+            }
+        }
+
+        if (returnSites.Count != 1)
+            return func;
+        var returnSite = returnSites[0];
+
+        var replacements = new Dictionary<InstructionKey, IrInstruction>();
+        var forwarded = new SortedSet<int>();
+        foreach (var ((gpr, offset), storeSites) in stores.OrderBy(pair => pair.Key.Gpr).ThenBy(pair => pair.Key.Offset))
+        {
+            if (storeSites.Count != 1 || !loads.TryGetValue((gpr, offset), out var loadSites) || loadSites.Count != 1)
+                continue;
+            var store = storeSites[0];
+            var load = loadSites[0];
+            if (!store.BlockLabel.Equals(func.EntryLabel, StringComparison.OrdinalIgnoreCase) ||
+                !load.BlockLabel.Equals(returnSite.BlockLabel, StringComparison.OrdinalIgnoreCase) ||
+                store.Order >= load.Order || load.Order >= returnSite.Order ||
+                forwarded.Contains(gpr) ||
+                orderedInstructions.Any(item => item.Site.Order < store.Order &&
+                                                InstructionDefinesRegister(item.Instruction, $"r{gpr}")))
+                continue;
+            if (HasOverlappingStackAccess(stackAccesses, new HashSet<InstructionKey> { store.Key, load.Key }, offset, 4))
+                continue;
+            var loadInstruction = (IrLoad)orderedInstructions.First(item => item.Site.Order == load.Order).Instruction;
+            replacements[load.Key] = new IrAssign(loadInstruction.Destination, IrValue.Register(StackSavedGprName(gpr)));
+            forwarded.Add(gpr);
+        }
+
+        if (forwarded.Count == 0)
+            return func;
+
+        foreach (var gpr in forwarded)
+            types.Unify(StackSavedGprName(gpr), ValueRepresentation.UInt32);
+
+        var rewrittenBlocks = new List<IrBasicBlock>(func.Blocks.Count);
+        foreach (var block in func.Blocks)
+        {
+            var rewritten = new List<IrInstruction>(block.Instructions.Count + forwarded.Count);
+            if (block.Label.Equals(func.EntryLabel, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var gpr in forwarded)
+                    rewritten.Add(new IrAssign(StackSavedGprName(gpr), IrValue.Register($"r{gpr}_0")));
+            }
+            for (var index = 0; index < block.Instructions.Count; ++index)
+            {
+                rewritten.Add(replacements.TryGetValue(new InstructionKey(block.Label, index), out var replacement)
+                    ? replacement
+                    : block.Instructions[index]);
+            }
+            rewrittenBlocks.Add(new IrBasicBlock(block.Label, rewritten));
+        }
+        return new IrFunction(func.Name, func.EntryLabel, rewrittenBlocks);
+
+        static void Add(Dictionary<(int, int), List<InstructionSite>> map, (int, int) key, InstructionSite site)
+        {
+            if (!map.TryGetValue(key, out var list))
+                map[key] = list = new List<InstructionSite>();
+            list.Add(site);
+        }
+    }
+
+    private static bool TryParseNonvolatileGpr(string? registerName, out int gpr)
+    {
+        var baseName = string.IsNullOrWhiteSpace(registerName) ? "" : GetRegisterBaseName(registerName);
+        if (baseName.Length > 1 && baseName[0] is 'r' or 'R' &&
+            int.TryParse(baseName.AsSpan(1), out gpr) && gpr is >= 14 and <= 31)
+            return true;
+        gpr = -1;
+        return false;
+    }
+
+    private static bool FunctionEligibleForStackFprElision(IrFunction func)
+    {
+        foreach (var block in func.Blocks)
+        {
+            foreach (var instruction in block.Instructions)
+            {
+                switch (instruction)
+                {
+                    case IrIndirectJump:
+                    case IrJumpTable:
+                    case IrUndefined:
+                        return false;
+                    case IrCall call when !TryParseAddress(call.Target, out _) &&
+                                          TlsContextStateHelpers.Contains(call.Target):
+                        return false;
+                }
+            }
+        }
+        return true;
+    }
 
     private static IrFunction ElideOverwrittenPsqStackLoads(IrFunction func)
     {

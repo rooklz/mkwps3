@@ -46,8 +46,32 @@ extern "C" void GX__SetCurrentMtx_80173214(uint32_t id);
 #define MKW_KNOWN_TYPED_NATIVE(addr, fn, ...) \
 template <> struct KnownTypedNativeCpuCall<addr> { \
     static constexpr bool kAvailable = true; \
+    static constexpr bool kLeaf = false; \
     static void Invoke(CpuContext* cpu) { (void)cpu; fn(__VA_ARGS__); } \
 }
+
+// A leaf native: plain host code that neither touches the guest's nonvolatile registers nor
+// re-enters guest code, called directly with no register guard. Its int result goes to r3.
+#define MKW_KNOWN_LEAF_NATIVE_R3(addr, fn, ...) \
+template <> struct KnownTypedNativeCpuCall<addr> { \
+    static constexpr bool kAvailable = true; \
+    static constexpr bool kLeaf = true; \
+    static void Invoke(CpuContext* cpu) { (void)cpu; cpu->gpr[3] = static_cast<uint32_t>(fn(__VA_ARGS__)); } \
+}
+
+extern "C" int32_t OS__DisableInterrupts_801a65ac();
+extern "C" int32_t OS__EnableInterrupts_801a65c0();
+extern "C" int32_t OS__RestoreInterrupts_801a65d4(int32_t level);
+
+MKW_KNOWN_LEAF_NATIVE_R3(0x801A65ACu, OS__DisableInterrupts_801a65ac);
+MKW_KNOWN_LEAF_NATIVE_R3(0x801A65C0u, OS__EnableInterrupts_801a65c0);
+MKW_KNOWN_LEAF_NATIVE_R3(0x801A65D4u, OS__RestoreInterrupts_801a65d4, static_cast<int32_t>(cpu->gpr[3]));
+
+extern "C" uint32_t MSL__cvt_fp2unsigned_80021478(double value);
+
+MKW_KNOWN_LEAF_NATIVE_R3(0x80021478u, MSL__cvt_fp2unsigned_80021478, cpu->fpr[1].d);
+
+#undef MKW_KNOWN_LEAF_NATIVE_R3
 
 MKW_KNOWN_TYPED_NATIVE(0x8016D3A4u, GX__SetVtxDesc_8016d3a4, cpu->gpr[3], cpu->gpr[4]);
 MKW_KNOWN_TYPED_NATIVE(0x8016DC34u, GX__ClearVtxDesc_8016dc34);
@@ -92,6 +116,11 @@ template <> struct KnownNativeCpuCall<addr> { \
     static constexpr void (*Entry)(CpuContext*) = &fn; \
 }
 
+extern "C" void OSLockMutex_HLE_801a7ee4(CpuContext* ctx);
+extern "C" void OSUnlockMutex_HLE_801a7fc0(CpuContext* ctx);
+
+MKW_KNOWN_NATIVE_CPU_CALL(0x801A7EE4u, OSLockMutex_HLE_801a7ee4);
+MKW_KNOWN_NATIVE_CPU_CALL(0x801A7FC0u, OSUnlockMutex_HLE_801a7fc0);
 MKW_KNOWN_NATIVE_CPU_CALL(0x800847C0u, nw4r__lyt__detail__DrawQuad_800847c0);
 MKW_KNOWN_NATIVE_CPU_CALL(0x80084D20u, nw4r__lyt__detail__DrawQuad_80084d20);
 

@@ -35,7 +35,14 @@ until racing; do
 done
 sleep 60
 tools/ps3-pad.sh a 6000 >/dev/null
-sleep $((N * 5 + 12))
+# PCS=<seconds>: also take a guest profile inside the measured windows.
+if [ -n "$PCS" ]; then
+    sleep 5
+    tools/ps3-pcs.sh "$PCS" 60 > "${TMPDIR:-/tmp}/bench-pcs.txt" 2>&1
+    sleep $((N * 5 + 7 - PCS))
+else
+    sleep $((N * 5 + 12))
+fi
 tools/ps3-log.sh | grep "^\[stats\]" | tail -n "$N" | python3 -c '
 import re, sys
 rows = []
