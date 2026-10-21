@@ -738,7 +738,17 @@ extern "C" inline double PPC_Fsel(double control, double negative, double positi
 
 extern "C" inline double PPC_Fctiwz(double value)
 {
+#if defined(__PPC__) || defined(__powerpc__)
+    // The PPE's fctiwz is the Gekko's: it saturates, gives 0x80000000 for a NaN and leaves the
+    // word in the low half (the high half is undefined on both, and nothing reads it). Done in C
+    // it took two trips through memory -- the conversion and the packing -- each a
+    // load-hit-store on the PPE, which has no FPR-GPR moves.
+    double result;
+    __asm__("fctiwz %0,%1" : "=f"(result) : "f"(value));
+    return result;
+#else
     return PpcPackIntegerWordInline(PpcClampIntegerWordInline(value));
+#endif
 }
 
 extern "C" inline double PPC_Fmadd(double a, double c, double b) { return PpcFmaddInline(a, c, b); }
