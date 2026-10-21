@@ -16,6 +16,7 @@
 #include "ppc_isa_config.h"
 #include "ppc_isa_float.h"
 #include "../memory_access.h"
+#include "../slow_path_census.h"
 
 #include <cmath>
 #include <cstdint>
@@ -136,6 +137,7 @@ MKW_PPC_NO_INLINE MKW_PPC_COLD inline void StoreQuantized(uint8_t* p, FprVal v, 
 template <uint32_t W, uint32_t I>
 MKW_PPC_NO_INLINE MKW_PPC_COLD inline FprVal LoadGeneric(uint32_t gqr, const uint8_t* p, uint32_t addr)
 {
+    MKW_SLOW_NOTE(kMkwSlowPsqLoad);
     if (!p)
         return PPC_PsqL(addr, W, I);
     const uint32_t scale = (gqr >> 24) & 0x3Fu;
@@ -152,6 +154,7 @@ MKW_PPC_NO_INLINE MKW_PPC_COLD inline FprVal LoadGeneric(uint32_t gqr, const uin
 template <uint32_t W, uint32_t I>
 MKW_PPC_NO_INLINE MKW_PPC_COLD inline void StoreGeneric(uint32_t gqr, uint8_t* p, uint32_t addr, FprVal v)
 {
+    MKW_SLOW_NOTE(kMkwSlowPsqStore);
     if (!p) {
         PPC_PsqSt(addr, v, W, I);
         return;

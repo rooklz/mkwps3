@@ -56,6 +56,7 @@ Everything is driven remotely (setup in [docs/BUILDING.md](docs/BUILDING.md#the-
 | `ps3-pad.sh` | Presses buttons on a virtual controller |
 | `ps3-pcs.sh` | Profiles the translated game code by function (call stacks need a build translated with `MKW_GUEST_STACKS=1`) |
 | `ps3-hprof.sh <gpu\|game>` | Profiles the renderer and FIFO parser by function (needs a `MKW_HPROF=1` build) |
+| `ps3-slow.sh [secs]` | Which guest functions take the memory slow paths, by name |
 | `ps3-recover.sh` | Hard-reboots the console through webMAN when the RSX has locked up |
 
 The control port (TCP 4001, `printf '<command>' | nc <console> 4001`) also takes: `gfx`
@@ -64,7 +65,8 @@ The control port (TCP 4001, `printf '<command>' | nc <console> 4001`) also takes
 copy's pixels), `dinfo <n>|t<addr>|s<stages>` (one draw's full state), `dwin`/`dskip <min> <max>`
 (draw only, or skip, a range of draws), `tevshow`/`xfshow` (show shader intermediates),
 `peek <addr> <len>` and `poke <addr> <value>` (guest memory), `mark` (the benchmark's
-counters), `where`, `fault`.
+counters), `slow on`/`slow` (which guest functions take the memory slow paths: an access the
+translator could have resolved shows up here), `where`, `fault`.
 
 Running anything on someone's console changes it: deploying relaunches the app and
 `ps3-recover.sh` reboots the machine. Check before doing either on hardware that isn't yours.

@@ -14,6 +14,7 @@
 
 #include "memory.h"
 #include "gx_hw.h"
+#include "slow_path_census.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -35,6 +36,7 @@ void NoteUnmapped() noexcept;
 template <typename T>
 T MemoryInline::ReadResolvedFallback(uint32_t addr)
 {
+    MKW_SLOW_NOTE(kMkwSlowResolvedFallback);
     if constexpr (sizeof(T) == 1) return Memory::Read8(addr);
     if constexpr (sizeof(T) == 2) return Memory::Read16(addr);
     if constexpr (sizeof(T) == 4) return Memory::Read32(addr);
@@ -50,6 +52,7 @@ double MemoryInline::ReadResolvedFallbackFloat64(uint32_t addr) { return Memory:
 template <typename T>
 void MemoryInline::WriteResolvedFallback(uint32_t addr, T value)
 {
+    MKW_SLOW_NOTE(kMkwSlowResolvedFallback);
     if constexpr (sizeof(T) == 1) Memory::Write8(addr, value);
     else if constexpr (sizeof(T) == 2) Memory::Write16(addr, value);
     else if constexpr (sizeof(T) == 4) Memory::Write32(addr, value);
@@ -241,28 +244,44 @@ std::vector<Memory::RegionConfig> Memory::DescribeRegions()
 
 uint8_t MemoryInline::Read8Slow(uint32_t addr)
 {
-    if (IsMmioAddress(addr)) return static_cast<uint8_t>(GxHw::MmioRead(addr, 1));
+    if (IsMmioAddress(addr)) {
+        MKW_SLOW_NOTE(kMkwSlowReadMmio);
+        return static_cast<uint8_t>(GxHw::MmioRead(addr, 1));
+    }
+    MKW_SLOW_NOTE(kMkwSlowReadRam);
     ResolveDeferredReads(addr, 1);
     return ReadScalar<uint8_t>(addr);
 }
 
 uint16_t MemoryInline::Read16Slow(uint32_t addr)
 {
-    if (IsMmioAddress(addr)) return static_cast<uint16_t>(GxHw::MmioRead(addr, 2));
+    if (IsMmioAddress(addr)) {
+        MKW_SLOW_NOTE(kMkwSlowReadMmio);
+        return static_cast<uint16_t>(GxHw::MmioRead(addr, 2));
+    }
+    MKW_SLOW_NOTE(kMkwSlowReadRam);
     ResolveDeferredReads(addr, 2);
     return ReadScalar<uint16_t>(addr);
 }
 
 uint32_t MemoryInline::Read32Slow(uint32_t addr)
 {
-    if (IsMmioAddress(addr)) return static_cast<uint32_t>(GxHw::MmioRead(addr, 4));
+    if (IsMmioAddress(addr)) {
+        MKW_SLOW_NOTE(kMkwSlowReadMmio);
+        return static_cast<uint32_t>(GxHw::MmioRead(addr, 4));
+    }
+    MKW_SLOW_NOTE(kMkwSlowReadRam);
     ResolveDeferredReads(addr, 4);
     return ReadScalar<uint32_t>(addr);
 }
 
 uint64_t MemoryInline::Read64Slow(uint32_t addr)
 {
-    if (IsMmioAddress(addr)) return static_cast<uint64_t>(GxHw::MmioRead(addr, 8));
+    if (IsMmioAddress(addr)) {
+        MKW_SLOW_NOTE(kMkwSlowReadMmio);
+        return static_cast<uint64_t>(GxHw::MmioRead(addr, 8));
+    }
+    MKW_SLOW_NOTE(kMkwSlowReadRam);
     ResolveDeferredReads(addr, 8);
     return ReadScalar<uint64_t>(addr);
 }
@@ -285,6 +304,7 @@ double MemoryInline::ReadFloat64Slow(uint32_t addr)
 
 void MemoryInline::Write8Slow(uint32_t addr, uint8_t val)
 {
+    MKW_SLOW_NOTE(IsGpuFifoAddress(addr) ? kMkwSlowWriteFifo : IsMmioAddress(addr) ? kMkwSlowWriteMmio : kMkwSlowWriteRam);
     if (IsGpuFifoAddress(addr)) { GX_HLE_FIFO_Write8(val); return; }
     if (IsMmioAddress(addr)) { GxHw::MmioWrite(addr, val, 1); return; }
     WriteScalar(addr, val);
@@ -292,6 +312,7 @@ void MemoryInline::Write8Slow(uint32_t addr, uint8_t val)
 
 void MemoryInline::Write16Slow(uint32_t addr, uint16_t val)
 {
+    MKW_SLOW_NOTE(IsGpuFifoAddress(addr) ? kMkwSlowWriteFifo : IsMmioAddress(addr) ? kMkwSlowWriteMmio : kMkwSlowWriteRam);
     if (IsGpuFifoAddress(addr)) { GX_HLE_FIFO_Write16(val); return; }
     if (IsMmioAddress(addr)) { GxHw::MmioWrite(addr, val, 2); return; }
     WriteScalar(addr, val);
@@ -299,6 +320,7 @@ void MemoryInline::Write16Slow(uint32_t addr, uint16_t val)
 
 void MemoryInline::Write32Slow(uint32_t addr, uint32_t val)
 {
+    MKW_SLOW_NOTE(IsGpuFifoAddress(addr) ? kMkwSlowWriteFifo : IsMmioAddress(addr) ? kMkwSlowWriteMmio : kMkwSlowWriteRam);
     if (IsGpuFifoAddress(addr)) { GX_HLE_FIFO_Write32(val); return; }
     if (IsMmioAddress(addr)) { GxHw::MmioWrite(addr, val, 4); return; }
     WriteScalar(addr, val);
@@ -306,6 +328,7 @@ void MemoryInline::Write32Slow(uint32_t addr, uint32_t val)
 
 void MemoryInline::Write64Slow(uint32_t addr, uint64_t val)
 {
+    MKW_SLOW_NOTE(IsGpuFifoAddress(addr) ? kMkwSlowWriteFifo : IsMmioAddress(addr) ? kMkwSlowWriteMmio : kMkwSlowWriteRam);
     if (IsGpuFifoAddress(addr)) {
         GX_HLE_FIFO_Write32(static_cast<uint32_t>(val >> 32));
         GX_HLE_FIFO_Write32(static_cast<uint32_t>(val));
@@ -318,6 +341,7 @@ void MemoryInline::Write64Slow(uint32_t addr, uint64_t val)
 void MemoryInline::WriteFloat32Slow(uint32_t addr, double val)
 {
     const uint32_t bits = ConvertPpcDoubleToSingleBits(val);
+    MKW_SLOW_NOTE(IsGpuFifoAddress(addr) ? kMkwSlowWriteFifo : IsMmioAddress(addr) ? kMkwSlowWriteMmio : kMkwSlowWriteRam);
     if (IsGpuFifoAddress(addr)) { GX_HLE_FIFO_WriteFloat(PpcSingleBitsToFloat(bits)); return; }
     if (IsMmioAddress(addr)) { GxHw::MmioWrite(addr, bits, 4); return; }
     WriteScalar(addr, bits);
@@ -327,6 +351,7 @@ void MemoryInline::WriteFloat64Slow(uint32_t addr, double val)
 {
     uint64_t bits;
     std::memcpy(&bits, &val, 8);
+    MKW_SLOW_NOTE(IsGpuFifoAddress(addr) ? kMkwSlowWriteFifo : IsMmioAddress(addr) ? kMkwSlowWriteMmio : kMkwSlowWriteRam);
     if (IsGpuFifoAddress(addr)) { GX_HLE_FIFO_WriteFloat(static_cast<float>(val)); return; }
     if (IsMmioAddress(addr)) { GxHw::MmioWrite(addr, bits, 8); return; }
     WriteScalar(addr, bits);
