@@ -25,6 +25,7 @@ extern "C" int mkw_lv2_thread_create(uint64_t* id, void (*entry)(void*), void* a
 extern "C" int mkw_lv2_thread_join(uint64_t id);
 extern "C" void mkw_lv2_thread_exit(void);
 extern "C" void mkw_rescue_register_thread(int gpu);
+extern "C" void mkw_hprof_attach(int which);
 
 namespace GxPipe {
 Cursor g_pipe;
@@ -636,6 +637,7 @@ void GpuThreadMain(void*)
 {
     MkwPinArenaOnThisThread();
     mkw_rescue_register_thread(1);
+    mkw_hprof_attach(0);
     if (g_sink && g_sink->start)
         g_sink->start(g_sink->ctx);
     uint64_t consumed = 0;

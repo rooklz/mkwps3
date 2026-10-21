@@ -212,6 +212,7 @@ extern "C" int mkw_bench(char* out, unsigned cap);
 extern "C" int mkw_where(char* out, unsigned cap);
 extern "C" void mkw_renderer_request_shot(void);
 extern "C" void mkw_renderer_request_ftrace(unsigned from);
+extern "C" int mkw_hprof_sample(int which, unsigned ms, const char* path);
 extern "C" void mkw_renderer_request_copy_dump(int index);
 extern "C" void mkw_renderer_set_tev_show(int mode);
 extern "C" void mkw_renderer_skip_draws(unsigned min, unsigned max);
@@ -429,6 +430,16 @@ void Listener(void*)
                 } else {
                     SendText(c, "usage: peek <hex addr> <hex len>\n");
                 }
+            } else if (!std::strncmp(cmd, "hprof ", 6)) {
+                // Native function samples of the GPU or game thread (a MKW_HPROF=1 build):
+                // `hprof <gpu|game> <secs>`, to /dev_hdd0/tmp/hprof.bin.
+                const int which = !std::strncmp(cmd + 6, "game", 4) ? 1 : 0;
+                const char* sp = std::strchr(cmd + 6, ' ');
+                const unsigned secs = sp ? static_cast<unsigned>(std::atoi(sp + 1)) : 5u;
+                char out[64];
+                snprintf(out, sizeof out, "%d samples\n",
+                         mkw_hprof_sample(which, (secs ? secs : 5u) * 1000u, "/dev_hdd0/tmp/hprof.bin"));
+                SendText(c, out);
             } else if (!std::strncmp(cmd, "poke ", 5)) {
                 // One 32-bit guest word: `poke <hex addr> <hex value>`.
                 unsigned addr = 0, value = 0;

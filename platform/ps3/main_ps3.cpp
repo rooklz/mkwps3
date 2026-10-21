@@ -38,6 +38,7 @@ extern "C" void mkw_lv2_usleep(uint32_t us);
 extern "C" void mkw_rescue_start(void);
 extern "C" void mkw_fault_handler_start(void);
 extern "C" void mkw_rescue_register_thread(int gpu);
+extern "C" void mkw_hprof_attach(int which);
 extern "C" void mkw_sysutil_start(void);
 extern "C" int mkw_sysutil_poll(void);
 extern "C" const GxSink* mkw_renderer_sink(void);
@@ -82,6 +83,7 @@ bool NoRendererFlag()
 void GuestMain(void*)
 {
     mkw_rescue_register_thread(0);
+    mkw_hprof_attach(1);
     g_guestExecAddr = &RecompMod::g_currentTranslatedExecutionAddress;
     g_guestEntries = &RecompMod::g_translatedEntries;
     g_guestInstructions = &RecompMod::g_guestInstructions;
