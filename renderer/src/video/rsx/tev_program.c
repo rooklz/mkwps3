@@ -963,6 +963,25 @@ static void emit_fog(FPEmitter *e, const BPState *bp)
 /* Which texture-coordinate interpolants a generated program reads. The RSX
  * routes only the ones named here, and an unnamed coordinate is left in its
  * default 2D configuration -- two live components and two frozen ones. */
+u32 tev_texmap_mask(const BPState *bp)
+{
+    unsigned stages = bp_tev_stage_count(bp);
+    unsigned i;
+    u32 mask = 0;
+    TevIndPlan plan;
+
+    for (i = 0; i < stages && i < BP_MAX_TEV_STAGES; i++)
+        if (bp->tev[i].tex_enable)
+            mask |= 1u << (bp->tev[i].tex_map & 7u);
+    /* The indirect lookups fetch maps of their own, which no stage has to
+     * share: EGG's light textures read their normal map only this way. */
+    ind_plan(bp, &plan);
+    for (i = 0; i < 4u; i++)
+        if (plan.lookups & (1u << i))
+            mask |= 1u << (bp->ind_stage[i].map & 7u);
+    return mask;
+}
+
 u32 tev_texcoord_mask(const BPState *bp)
 {
     unsigned stages = bp_tev_stage_count(bp);

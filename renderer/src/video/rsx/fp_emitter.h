@@ -303,6 +303,12 @@ DOL_INLINE void fp_emit_literal(FPEmitter *e, const float v[4])
     }
 }
 
+#ifdef FP_TRACE
+/* Host-side debugging (tests/renderer): every instruction as text. */
+void fp_trace(unsigned op, unsigned dst, unsigned mask, int sat, const FPSrc *const *srcs,
+              unsigned nsrc, const float *lit);
+#endif
+
 DOL_INLINE void fp_emit(FPEmitter *e, unsigned op, unsigned dst, unsigned mask,
                         unsigned precision, int saturate,
                         FPSrc a, FPSrc b, FPSrc c)
@@ -355,6 +361,9 @@ DOL_INLINE void fp_emit(FPEmitter *e, unsigned op, unsigned dst, unsigned mask,
     if (dst + 1 > e->num_regs)
         e->num_regs = dst + 1;
 
+#ifdef FP_TRACE
+    fp_trace(op, dst, mask, saturate, srcs, 3, have_const ? lit : 0);
+#endif
     fp_emit_raw(e, w0, w1, w2, w3);
     if (have_const)
         fp_emit_literal(e, lit);
@@ -385,6 +394,13 @@ DOL_INLINE void fp_emit_tex(FPEmitter *e, unsigned op, unsigned dst,
     if (dst + 1 > e->num_regs)
         e->num_regs = dst + 1;
 
+#ifdef FP_TRACE
+    {
+        const FPSrc *one[1];
+        one[0] = &coord;
+        fp_trace(op | (unit << 8), dst, mask, saturate, one, 1, 0);
+    }
+#endif
     fp_emit_raw(e, w0, w1, fp_none().word & 0x0003FFFFu,
                 (fp_none().word & 0x0003FFFFu) | FP_ADDR_DIRECT);
 }

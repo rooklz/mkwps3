@@ -211,6 +211,10 @@ extern "C" int mkw_guest_stack(uint32_t* out, unsigned cap);
 extern "C" int mkw_bench(char* out, unsigned cap);
 extern "C" int mkw_where(char* out, unsigned cap);
 extern "C" void mkw_renderer_request_shot(void);
+extern "C" void mkw_renderer_request_ftrace(unsigned from);
+extern "C" void mkw_renderer_request_copy_dump(int index);
+extern "C" void mkw_renderer_request_draw_info(unsigned index, unsigned texture);
+extern "C" uint8_t* MkwGuestArenaBase();
 extern "C" int mkw_renderer_stats(char* out, unsigned cap);
 extern "C" const char* mkw_renderer_profile(void);
 extern "C" void mkw_pad_inject(uint32_t buttons, int reads, int stickX, int stickY);
@@ -404,10 +408,39 @@ void Listener(void*)
             } else if (!std::strncmp(cmd, "shot", 4)) {
                 mkw_renderer_request_shot();
                 SendText(c, "requested\n");
+            } else if (!std::strncmp(cmd, "ftrace", 6)) {
+                // Every draw (from draw <n>, if given) and EFB copy of the next frame, to /dev_hdd0/tmp/ftrace.bin.
+                mkw_renderer_request_ftrace(cmd[6] == ' ' ? static_cast<unsigned>(std::atoi(cmd + 7)) : 0u);
+                SendText(c, "armed\n");
+            } else if (!std::strncmp(cmd, "peek ", 5)) {
+                // Guest memory to /dev_hdd0/tmp/peek.bin: `peek <hex addr> <hex len>`.
+                unsigned addr = 0, len = 0;
+                uint8_t* arena = MkwGuestArenaBase();
+                if (std::sscanf(cmd + 5, "%x %x", &addr, &len) == 2 && arena && len && len <= 0x100000u) {
+                    if (FILE* f = std::fopen("/dev_hdd0/tmp/peek.bin", "wb")) {
+                        std::fwrite(arena + (addr & 0x3FFFFFFFu), 1, len, f);
+                        std::fclose(f);
+                        SendText(c, "written\n");
+                    }
+                } else {
+                    SendText(c, "usage: peek <hex addr> <hex len>\n");
+                }
+            } else if (!std::strncmp(cmd, "dinfo ", 6)) {
+                // State, vertices and texgens of draw <n> of the next frame, or of the first draw
+                // sampling texture <hex addr> with `dinfo t<addr>`, to the log.
+                if (cmd[6] == 't')
+                    mkw_renderer_request_draw_info(0, static_cast<unsigned>(std::strtoul(cmd + 7, nullptr, 16)));
+                else
+                    mkw_renderer_request_draw_info(static_cast<unsigned>(std::atoi(cmd + 6)), 0);
+                SendText(c, "armed\n");
+            } else if (!std::strncmp(cmd, "cshot ", 6)) {
+                // One EFB copy target's pixels, to /dev_hdd0/tmp/copy-<n>.ppm.
+                mkw_renderer_request_copy_dump(std::atoi(cmd + 6));
+                SendText(c, "requested\n");
             } else if (!std::strncmp(cmd, "fault", 5))
                 SendText(c, g_faultReport[0] ? g_faultReport : "no fault\n");
             else
-                SendText(c, "commands: ping, relaunch, put <path> <size>, cat <path>, ctx <guest|gpu>, pcs <secs>, where, fault, shot, gfx, prof, pad <hex> <reads> [x y], bench\n");
+                SendText(c, "commands: ping, relaunch, put <path> <size>, cat <path>, ctx <guest|gpu>, pcs <secs>, where, fault, shot, ftrace [n], cshot <n>, dinfo <n>|t<addr>, peek <addr> <len>, gfx, prof, pad <hex> <reads> [x y], bench\n");
         }
         netClose(c);
     }

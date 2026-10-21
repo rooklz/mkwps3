@@ -2000,11 +2000,15 @@ static void ftrace_frame_edge(void)
     }
 }
 
+u32 g_ftrace_from;                   /* first within-frame draw recorded */
+
 static void ftrace_draw(const GXState *g, GXPrimitive prim, u16 nverts, u64 idx,
                         unsigned vat, u32 data_addr)
 {
     FtRec *r;
     unsigned st, k = 0;
+    if (idx < g_ftrace_from)
+        return;
     if (s_bpd && s_bpd_n < BPD_MAX && g->xf.projection_orthographic) {
         BpdRec *b = &s_bpd[s_bpd_n++];
         unsigned v;
@@ -2032,7 +2036,7 @@ static void ftrace_draw(const GXState *g, GXPrimitive prim, u16 nverts, u64 idx,
     memset(r, 0, sizeof *r);
     r->kind = 1;
     r->prim = (u8)prim;
-    r->ortho = (u8)g->xf.projection_orthographic;
+    r->ortho = (u8)(g->xf.projection_orthographic | ((g->parser.cp.vcd_lo & 1u) << 1));   /* bit 1: skinned */
     r->tev = (u8)g->bp.genmode.num_tev_stages;
     r->ind = (u16)g->bp.genmode.num_indstages;
     r->nverts = nverts;
@@ -2079,6 +2083,18 @@ static void ftrace_copy(const BPCopy *cp, const GXState *g, u64 idx)
                   ((u32)(g->bp.zmode.update_enable != 0) << 26) |
                   ((u32)(g->bp.blend.color_update != 0) << 25) |
                   ((u32)(g->bp.blend.alpha_update != 0) << 24);
+}
+
+/* dinfo by texture: does this draw sample the texture at `addr` on any stage? */
+u32 g_draw_info_tex;
+static int draw_samples_texture(const GXState *g, u32 addr)
+{
+    u32 maps = tev_texmap_mask(&g->bp);
+    unsigned m;
+    for (m = 0; m < 8u; m++)
+        if ((maps & (1u << m)) && g->bp.tex[m].address == addr)
+            return 1;
+    return 0;
 }
 
 static void batch_flush(void);   /* draw batching, below */
@@ -3311,9 +3327,11 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
             u64 idx = g_gx_render.draws - 1 - g_draw_frame_base;
             extern u32 g_draw_info_minv;
             extern u32 g_census_agg[4];   /* draws, verts, in-frustum, wneg */
+            extern u32 g_draw_info_tex;
             int hit = g_draw_info_arm &&
                       (g_draw_info_minv ? (vertex_count >= g_draw_info_minv)
-                                        : (idx == (u64)g_draw_info_idx));
+                       : g_draw_info_tex ? draw_samples_texture(g, g_draw_info_tex)
+                                         : (idx == (u64)g_draw_info_idx));
             /* Aggregate mode: minv armed counts EVERY matching draw's frustum
              * stats for one frame instead of dumping the first. */
             if (g_draw_info_arm && g_draw_info_minv && vertex_count >= g_draw_info_minv) {
@@ -3506,6 +3524,15 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
                     LOG_INFO(LOG_CORE, "DCENSUS %u/%u in-frustum, %u w<=0",
                              inf, n9, wneg);
                 }
+                {   unsigned r9;
+                    for (r9 = 0; r9 < 4; r9++)
+                        LOG_INFO(LOG_CORE, "DTEVREG %u reg={%g %g %g %g} konst={%g %g %g %g}", r9,
+                                 g->bp.tev_reg[r9][0], g->bp.tev_reg[r9][1], g->bp.tev_reg[r9][2], g->bp.tev_reg[r9][3],
+                                 g->bp.tev_konst[r9][0], g->bp.tev_konst[r9][1], g->bp.tev_konst[r9][2], g->bp.tev_konst[r9][3]);
+                    for (r9 = 0; r9 < 4; r9++)
+                        LOG_INFO(LOG_CORE, "DKSEL stage %u kc=%u ka=%u", r9,
+                                 (unsigned)g->bp.tev[r9].konst_color, (unsigned)g->bp.tev[r9].konst_alpha);
+                }
                 LOG_INFO(LOG_CORE, "DINFO2 pe_control=%06x aup=%u cup=%u",
                          g->bp.pe_control, g->bp.blend.alpha_update,
                          g->bp.blend.color_update);
@@ -3599,14 +3626,14 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
 
     prof_enter(PH_TEX);                 /* PHASE PROFILE: bind + any decode */
     {
-        /* Bind every texture the generated TEV program samples. */
-        unsigned stages = bp_tev_stage_count(&g->bp), st;
-        for (st = 0; st < stages && st < BP_MAX_TEV_STAGES; st++) {
-            const BPTevStage *ts = &g->bp.tev[st];
-            if (ts->tex_enable)
-                texcache_bind(c, ts->tex_map & 7u,
-                              &g->bp.tex[ts->tex_map & 7u], &g->bp);
-        }
+        /* Bind every texture the generated program samples, including the
+         * indirect lookups' maps: those are read by no TEV stage, and left
+         * unbound they read whatever the unit held from an earlier draw. */
+        u32 maps = tev_texmap_mask(&g->bp);
+        unsigned m;
+        for (m = 0; m < 8u; m++)
+            if (maps & (1u << m))
+                texcache_bind(c, m, &g->bp.tex[m], &g->bp);
     }
     prof_exit();
 

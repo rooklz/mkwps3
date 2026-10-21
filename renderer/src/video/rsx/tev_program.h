@@ -159,6 +159,10 @@ typedef struct {
  * configuration. Returns 0 on success. */
 int tev_generate(const BPState *bp, FPEmitter *e, TevProgramInfo *info);
 
+/* Bit per texture map (0..7) the generated program samples: the TEV stages'
+ * and the indirect lookups'. Every one of them has to be bound for the draw. */
+u32 tev_texmap_mask(const BPState *bp);
+
 /* Which texture-coordinate interpolants the generated fragment program reads,
  * as a bit per coordinate. The RSX routes only the coordinates named here. */
 u32 tev_texcoord_mask(const BPState *bp);

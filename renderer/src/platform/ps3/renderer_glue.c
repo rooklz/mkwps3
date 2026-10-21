@@ -9,6 +9,7 @@
  * GPU thread except dirty_mark, which DMA and cache-flush reports reach from
  * the game thread. */
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -168,6 +169,46 @@ void mkw_renderer_request_shot(void)
     s_shot_request = 1;
 }
 
+/* Control-port frame trace and copy-target dumps (gx_render.c), likewise
+ * serviced on the GPU thread between frames. */
+static volatile int s_cshot_request = -1;
+
+void mkw_renderer_request_ftrace(unsigned from)
+{
+    extern int g_ftrace_arm;
+    extern u32 g_ftrace_from;
+    g_ftrace_from = from;
+    g_ftrace_arm = 1;
+}
+
+static volatile int s_dinfo_pending;
+
+void mkw_renderer_request_draw_info(unsigned index, unsigned texture)
+{
+    extern u32 g_draw_info_idx;
+    extern u32 g_draw_info_tex;
+    extern int g_draw_info_arm;
+    g_draw_info_tex = texture;
+    log_set_level(LOG_CORE, LOG_LEVEL_INFO);   /* the dump is INFO-level; frame_done lowers it again */
+    s_dinfo_pending = 1;
+    g_draw_info_idx = index;
+    g_draw_info_arm = 1;
+}
+
+void mkw_renderer_request_copy_dump(int index)
+{
+    s_cshot_request = index;
+}
+
+static void say_line(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    putchar('\n');
+}
+
 static void frame_done(void *ctx)
 {
     (void)ctx;
@@ -180,6 +221,20 @@ static void frame_done(void *ctx)
         rsx_wait_idle();
         rsx_video_screenshot("/dev_hdd0/tmp/mkwii-shot.ppm", 1u, (unsigned)g_rsx.current);
         printf("[gfx] screenshot written (frame %llu)\n", (unsigned long long)s_frames);
+    }
+    if (s_dinfo_pending) {
+        extern int g_draw_info_arm;
+        if (!g_draw_info_arm || ++s_dinfo_pending > 3) {
+            /* Dumped (or the draw never came): stop the copy-by-copy INFO flood. */
+            g_draw_info_arm = 0;
+            s_dinfo_pending = 0;
+            log_set_level(LOG_CORE, LOG_LEVEL_WARN);
+        }
+    }
+    if (s_cshot_request >= 0) {
+        const int idx = s_cshot_request;
+        s_cshot_request = -1;
+        gx_render_dump_copy((unsigned)idx, say_line);
     }
     prof_enter(PH_PRESENT);
     rsx_frame_end();      /* flip; paced by the display */

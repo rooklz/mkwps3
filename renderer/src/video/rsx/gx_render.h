@@ -96,6 +96,8 @@ void gx_render_sample_caches(void);
 
 /* List live texture cache entries through a line callback. */
 void gx_render_dump_textures(void (*out)(const char *));
+/* One EFB copy target's surface to /dev_hdd0/tmp/copy-<idx>.ppm (GPU thread). */
+int gx_render_dump_copy(unsigned idx, void (*say)(const char *, ...));
 
 /* One line naming everything that could grow, for a periodic console report.
  * Deltas are what matter, so the caller prints it every N frames and compares.

@@ -157,7 +157,13 @@ int rsx_fp_create(RsxFragProgram *fp, const u32 *ucode, u32 words,
 
 placed:
     fp->words    = words;
-    fp->num_regs = num_regs < 1 ? 1 : num_regs;
+    /* The RSX allocates fragment temporaries in pairs: an odd count loses the
+     * highest register, which then reads as zero. A program whose top register
+     * has an even index (R10, the indirect sample, in EGG's light textures)
+     * computed with a zero there, and its light texture came out one flat
+     * colour. */
+    num_regs = (num_regs + 1u) & ~1u;
+    fp->num_regs = num_regs < 2 ? 2 : num_regs;
     fp->texcoords = texcoord_mask;
     fp->serial   = ++s_program_serial;
     fp->valid    = 1;

@@ -26,3 +26,6 @@ upstream/wiicompiled/translator/tests/**/obj/
 /tests/audio/ax_decode_test
 # Built packages
 /out/
+/tests/renderer/tevdump
+/tests/renderer/vpdump
+*.dSYM/
