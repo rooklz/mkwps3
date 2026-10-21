@@ -47,14 +47,14 @@ public sealed class InlineArithmeticTableCodeGenTests
 
     public static IEnumerable<object[]> ScalarCases()
     {
-        yield return Case("PPC_Fadds", "PpcForceSingleValueInline");
-        yield return Case("PPC_FaddsNoNi", "static_cast<float>");
-        yield return Case("PPC_Fsubs", "PpcForceSingleValueInline");
-        yield return Case("PPC_FsubsNoNi", "static_cast<float>");
+        yield return Case("PPC_Fadds", "PpcFaddsInline");
+        yield return Case("PPC_FaddsNoNi", "PpcFaddsNoNiInline");
+        yield return Case("PPC_Fsubs", "PpcFsubsInline");
+        yield return Case("PPC_FsubsNoNi", "PpcFsubsNoNiInline");
         yield return Case("PPC_Fmuls", "PpcFmulsInline");
         yield return Case("PPC_FmulsNoNi", "PpcFmulsNoNiInline");
-        yield return Case("PPC_Fdivs", "PpcForceSingleValueInline");
-        yield return Case("PPC_FdivsNoNi", "static_cast<float>");
+        yield return Case("PPC_Fdivs", "PpcFdivsInline");
+        yield return Case("PPC_FdivsNoNi", "PpcFdivsNoNiInline");
         yield return Case("PPC_Fsqrt", "std::sqrt");
         yield return Case("PPC_Fmadd", "PpcFmaddInline");
         yield return Case("PPC_Fmsub", "PpcFmsubInline");

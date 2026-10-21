@@ -328,7 +328,7 @@ public class ResidentAbiCodeGenTests
         Assert.Contains("state_free_results_native(", variant, StringComparison.Ordinal);
         Assert.Contains("PPC_FPR native_f1", variant, StringComparison.Ordinal);
         Assert.Contains("PPC_FPR native_f2", variant, StringComparison.Ordinal);
-        Assert.Contains("return { static_cast<uint64_t>(cached_r3), cached_f1.raw };", variant, StringComparison.Ordinal);
+        Assert.Contains("return MkwStateFreePack2(static_cast<uint64_t>(cached_r3), PpcFprBits(cached_f1));", variant, StringComparison.Ordinal);
         Assert.DoesNotContain("ctx->", variant, StringComparison.Ordinal);
     }
 
@@ -406,8 +406,8 @@ public class ResidentAbiCodeGenTests
             stateFreeCallSymbols: new Dictionary<uint, string> { [calleeAddress] = "state_free_results_native" });
 
         Assert.Matches(@"const auto state_free_result_[0-9A-F_]+ = state_free_results_native\(", code);
-        Assert.Matches(@"r3 = static_cast<uint32_t>\(state_free_result_[0-9A-F_]+\[0\]\);", code);
-        Assert.Matches(@"f1\.raw = static_cast<uint64_t>\(state_free_result_[0-9A-F_]+\[1\]\);", code);
+        Assert.Matches(@"r3 = static_cast<uint32_t>\(MkwStateFreeGet2\(state_free_result_[0-9A-F_]+, 0\)\);", code);
+        Assert.Matches(@"PpcSetFprBits\(f1, static_cast<uint64_t>\(MkwStateFreeGet2\(state_free_result_[0-9A-F_]+, 1\)\)\);", code);
         Assert.DoesNotContain("r4 = state_free_result", code, StringComparison.Ordinal);
         Assert.DoesNotContain("f2 = state_free_result", code, StringComparison.Ordinal);
     }
@@ -437,8 +437,8 @@ public class ResidentAbiCodeGenTests
             stateFreeAbiContracts: new Dictionary<uint, GuestAbiContract> { [calleeAddress] = contract },
             stateFreeCallSymbols: new Dictionary<uint, string> { [calleeAddress] = "state_free_struct_native" });
 
-        Assert.Matches(@"f0\.raw = static_cast<uint64_t>\(state_free_result_[0-9A-F_]+\.f0\.raw\);", code);
-        Assert.Matches(@"f4\.raw = static_cast<uint64_t>\(state_free_result_[0-9A-F_]+\.f4\.raw\);", code);
+        Assert.Matches(@"PpcSetFprBits\(f0, static_cast<uint64_t>\(PpcFprBits\(state_free_result_[0-9A-F_]+\.f0\)\)\);", code);
+        Assert.Matches(@"PpcSetFprBits\(f4, static_cast<uint64_t>\(PpcFprBits\(state_free_result_[0-9A-F_]+\.f4\)\)\);", code);
     }
 
     [Fact]
@@ -541,7 +541,7 @@ public class ResidentAbiCodeGenTests
     }
 
     [Fact]
-    public void PublicLeafDoesNotElideNonvolatileGprStackRoundTrip()
+    public void PublicLeafKeepsNonvolatileGprSaveButForwardsTheRestore()
     {
         var function = new IrFunction("public_leaf_gpr_save", "entry", new[]
         {
@@ -561,10 +561,12 @@ public class ResidentAbiCodeGenTests
             new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>()),
             enableLeafAbiSpillElision: true);
 
-        Assert.Contains("FlatWriteRam32", code, StringComparison.Ordinal);
-        Assert.Contains("FlatRead32", code, StringComparison.Ordinal);
+        // The save stays (anything walking the frame still sees it), but the epilogue reload
+        // becomes the entry value: a store-then-load of the same word stalls the Cell PPE.
+        Assert.Contains("FlatWriteRam32((r1 + 12), r31)", code, StringComparison.Ordinal);
         Assert.Contains("r31 = 7", code, StringComparison.Ordinal);
-        Assert.Contains("r31 = MemoryInline::FlatRead32", code, StringComparison.Ordinal);
+        Assert.Contains("r31 = stack_saved_r31_entry;", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("FlatRead32", code, StringComparison.Ordinal);
     }
 
     [Fact]
