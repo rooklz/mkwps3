@@ -22,3 +22,7 @@ upstream/wiicompiled/translator/tests/**/bin/
 upstream/wiicompiled/translator/tests/**/obj/
 .DS_Store
 /tools/local.env
+# Host test binaries
+/tests/audio/ax_decode_test
+# Built packages
+/out/

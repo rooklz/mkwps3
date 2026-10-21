@@ -538,6 +538,129 @@ void WriteGuestS32Buffer(uint32_t addr, const int* src, size_t count);
 
 void ReadGuestS32Buffer(uint32_t addr, int* dst, size_t count);
 
+// The voice resamplers: SRCTYPE_POLYPHASE (0) with the DROM coefficient bank, LINEAR (1),
+// anything else 1:1. ResampleAudio pulls samples through a reader; ResampleLine reads ones
+// already decoded.
+template <typename Reader>
+inline uint32_t ResampleAudio(Reader&& readSample, int16_t* out, uint32_t count, int16_t* lastSamples,
+                              uint32_t pos, uint32_t ratio, uint16_t srcType,
+                              const int16_t* coeffs = nullptr) {
+    if (coeffs && srcType == 0) {
+        std::array<int16_t, 4> temp{};
+        std::memcpy(temp.data(), lastSamples, sizeof(int16_t) * 4);
+        uint32_t idx = 4;
+        uint32_t readSamples = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            pos += ratio;
+            while (pos >= 0x10000u) {
+                temp[idx++ & 3] = readSample(readSamples++);
+                pos -= 0x10000u;
+            }
+
+            const uint16_t fracIndex = static_cast<uint16_t>(((pos & 0xffffu) >> 9) << 2);
+            const int16_t* c = coeffs + fracIndex;
+            const int64_t t0 = temp[idx++ & 3];
+            const int64_t t1 = temp[idx++ & 3];
+            const int64_t t2 = temp[idx++ & 3];
+            const int64_t t3 = temp[idx++ & 3];
+            out[i] = ClampS16((t0 * c[0] + t1 * c[1] + t2 * c[2] + t3 * c[3]) >> 15);
+        }
+        lastSamples[3] = temp[--idx & 3];
+        lastSamples[2] = temp[--idx & 3];
+        lastSamples[1] = temp[--idx & 3];
+        lastSamples[0] = temp[--idx & 3];
+        return pos & 0xffffu;
+    }
+
+    // SRCTYPE_POLYPHASE (0) without a table and SRCTYPE_LINEAR (1) both degrade to
+    // LINEAR; anything else (SRCTYPE_NEAREST or undefined) reads the accelerator 1:1
+    // and ignores the ratio, matching DSPHLE's ResampleAudio branch order.
+    if (srcType != 0 && srcType != 1) {
+        for (uint32_t i = 0; i < count; ++i) {
+            out[i] = readSample(i);
+        }
+        if (count >= 4) {
+            std::memcpy(lastSamples, out + count - 4, sizeof(int16_t) * 4);
+        }
+        return pos;
+    }
+
+    std::array<int16_t, 4> temp{};
+    std::memcpy(temp.data(), lastSamples, sizeof(int16_t) * 4);
+    uint32_t idx = 4;
+    uint32_t readSamples = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        pos += ratio;
+        while (pos >= 0x10000u) {
+            temp[idx++ & 3] = readSample(readSamples++);
+            pos -= 0x10000u;
+        }
+        const uint16_t frac = pos & 0xffffu;
+        if (frac == 0) {
+            out[i] = temp[idx++ & 3];
+            idx += 3;
+        } else {
+            const int32_t s0 = temp[idx++ & 3];
+            const int32_t s1 = temp[idx++ & 3];
+            idx += 2;
+            out[i] = static_cast<int16_t>((s0 * static_cast<uint16_t>(-frac) + s1 * frac) >> 16);
+        }
+    }
+    lastSamples[3] = temp[--idx & 3];
+    lastSamples[2] = temp[--idx & 3];
+    lastSamples[1] = temp[--idx & 3];
+    lastSamples[0] = temp[--idx & 3];
+    return pos & 0xffffu;
+}
+
+// ResampleAudio over samples already decoded into `line` (history first, see Resample).
+// The same arithmetic, minus its four-entry ring: every ring slot was reloaded right after
+// it was stored, a load-hit-store per tap on the PPE.
+inline uint32_t ResampleLine(const int16_t* line, int16_t* out, uint32_t count,
+                             int16_t* lastSamples, uint32_t pos, uint32_t ratio, uint16_t srcType,
+                             const int16_t* coeffs, bool coeffsFit32) {
+    uint32_t read = 0;
+    if (coeffs && srcType == 0) {
+        for (uint32_t i = 0; i < count; ++i) {
+            pos += ratio;
+            read += pos >> 16;
+            pos &= 0xffffu;
+            const int16_t* t = line + read;
+            const int16_t* c = coeffs + ((pos >> 9) << 2);
+            if (coeffsFit32) {
+                out[i] = ClampS16((t[0] * c[0] + t[1] * c[1] + t[2] * c[2] + t[3] * c[3]) >> 15);
+            } else {
+                out[i] = ClampS16((static_cast<int64_t>(t[0]) * c[0] + static_cast<int64_t>(t[1]) * c[1] +
+                                   static_cast<int64_t>(t[2]) * c[2] + static_cast<int64_t>(t[3]) * c[3]) >> 15);
+            }
+        }
+    } else if (srcType != 0 && srcType != 1) {
+        for (uint32_t i = 0; i < count; ++i) {
+            out[i] = line[4 + i];
+        }
+        if (count >= 4) {
+            std::memcpy(lastSamples, out + count - 4, sizeof(int16_t) * 4);
+        }
+        return pos;
+    } else {
+        for (uint32_t i = 0; i < count; ++i) {
+            pos += ratio;
+            read += pos >> 16;
+            pos &= 0xffffu;
+            const int16_t* t = line + read;
+            if (pos == 0) {
+                out[i] = t[0];
+            } else {
+                const int32_t s0 = t[0];
+                const int32_t s1 = t[1];
+                out[i] = static_cast<int16_t>((s0 * static_cast<uint16_t>(-pos) + s1 * static_cast<int32_t>(pos)) >> 16);
+            }
+        }
+    }
+    std::memcpy(lastSamples, line + read, sizeof(int16_t) * 4);
+    return pos;
+}
+
 class Accelerator {
 public:
     void Setup(AXPBWii* pb) {
