@@ -17,6 +17,45 @@ public sealed partial class CxxLinearCodeGenerator
     [ThreadStatic]
     private static uint? _markAddress;
 
+    /// <summary>
+    /// Whether the body being emitted leaves CR fields 1-4 as it found them (its architectural
+    /// contract writes none of them). Then ctx-&gt;cr still holds exactly the cr1-cr4 a linked EABI
+    /// callee may read, and the call needn't publish the body's CR first.
+    /// </summary>
+    [ThreadStatic]
+    private static bool _bodyKeepsCallCr;
+
+    /// <summary>
+    /// Whether the body's own instructions write any of CR fields 1-4. Callees don't count: an EABI
+    /// callee that writes cr2-cr4 saved them first and restores them. A whole-register definition
+    /// (mtcrf, mcrf, the CR logical helpers) counts as writing every field.
+    /// </summary>
+    private static bool BodyWritesCallCr(IrFunction func)
+    {
+        foreach (var block in func.Blocks)
+        {
+            foreach (var instruction in block.Instructions)
+            {
+                if (instruction is IrSetCrField setCr)
+                {
+                    if (((1 << (setCr.FieldIndex & 7)) & GuestEabiVisibility.CallReadCr) != 0)
+                        return true;
+                    continue;
+                }
+                foreach (var definition in IrRegisterDataFlow.Definitions(instruction))
+                {
+                    var baseName = RegisterNameUtils.HardwareBase(definition);
+                    if (baseName.Equals("cr", StringComparison.OrdinalIgnoreCase) ||
+                        baseName.StartsWith("crb", StringComparison.OrdinalIgnoreCase) ||
+                        (baseName.Length == 3 && baseName.StartsWith("cr", StringComparison.OrdinalIgnoreCase) &&
+                         baseName[2] is >= '1' and <= '4'))
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static uint? MarkAddressOf(IrFunction func)
     {
         foreach (var candidate in new[] { func.EntryLabel, func.Name })

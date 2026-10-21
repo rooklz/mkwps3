@@ -430,7 +430,8 @@ public sealed partial class CxxLinearCodeGenerator
     private static ResidencyBoundarySync ResolveDirectCallBoundarySync(
         uint target,
         IReadOnlyDictionary<uint, GuestAbiContract> guestAbiContracts,
-        IReadOnlySet<uint> modOverridableCallTargets)
+        IReadOnlySet<uint> modOverridableCallTargets,
+        bool linkedCall = false)
     {
         if (_activeResidency is null ||
             modOverridableCallTargets.Contains(target) ||
@@ -448,7 +449,26 @@ public sealed partial class CxxLinearCodeGenerator
                 ? ResidencyBoundarySync.EabiFencedCall
                 : ResidencyBoundarySync.Full;
         }
-        return ResidencyBoundarySync.FromCalleeContract(contract);
+        var sync = ResidencyBoundarySync.FromCalleeContract(contract);
+        if (linkedCall && GuestEabiVisibility.NarrowsCallFlags && GuestEabiVisibility.Applies(target))
+        {
+            // A linked EABI callee that writes cr2-cr4 read them first: it saved them, and restores
+            // them before it returns (it still publishes the restored value for a caller that
+            // reloads through a full boundary). This caller's copy is therefore still right, and
+            // the reload -- a load that hits the callee's return store -- can go.
+            if (sync.ReloadsCr && (contract.CrPossibleWriteMask & ~contract.CrReadBeforeWriteMask) == 0)
+            {
+                sync = sync with { ReloadsCr = false };
+            }
+            // It can only read cr1-cr4, almost always to save cr2-cr4 with mfcr. If this body never
+            // wrote those, ctx->cr already holds them as the callee must see them, and with no reload
+            // to bring the rest back the store, and the load-hit-store on the callee's entry load, go.
+            if (_bodyKeepsCallCr && sync.FlushesCr && !sync.ReloadsCr)
+            {
+                sync = sync with { FlushesCr = false };
+            }
+        }
+        return sync;
     }
 
     /// <summary>

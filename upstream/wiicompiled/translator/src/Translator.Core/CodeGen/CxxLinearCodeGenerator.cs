@@ -137,10 +137,13 @@ public sealed partial class CxxLinearCodeGenerator
             func, minimumAccesses: hasProvenKernelEntry ? 2 : 8, ignoreDisabledPcTraces: true,
             scalarOnly: !hasProvenKernelEntry);
         var architecturalFunc = func;
+        var architecturalContract = GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts);
         var guestAbiContract = MarkAddressOf(func) is { } contractAddress
-            ? GuestEabiVisibility.Apply(contractAddress,
-                GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts))
-            : GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts);
+            ? GuestEabiVisibility.Apply(contractAddress, architecturalContract)
+            : architecturalContract;
+        var keepsCallCr = MarkAddressOf(func) is { } keepsAddress &&
+                          GuestEabiVisibility.NarrowsCallFlags && GuestEabiVisibility.Applies(keepsAddress) &&
+                          !BodyWritesCallCr(architecturalFunc);
         // r14-r31/f14-f31 stay inside this body (GuestEabiVisibility.LocalizeNonvolatile).
         var localizesNonvolatile = MarkAddressOf(func) is { } localAddress &&
                                    GuestEabiVisibility.Localizes(localAddress, guestAbiContract);
@@ -282,6 +285,8 @@ public sealed partial class CxxLinearCodeGenerator
         {
             var previousMarkAddress = _markAddress;
             _markAddress = MarkAddressOf(func);
+            var previousKeepsCallCr = _bodyKeepsCallCr;
+            _bodyKeepsCallCr = keepsCallCr;
             var previousResidency = _activeResidency;
             var previousDirectCallTargets = _emittedDirectCallTargets;
             var previousLocalLabels = _emittedLocalLabelAddresses;
@@ -557,6 +562,7 @@ public sealed partial class CxxLinearCodeGenerator
                 _reusableFunctionBodyBuilder = body;
                 _activeResidency = previousResidency;
                 _markAddress = previousMarkAddress;
+                _bodyKeepsCallCr = previousKeepsCallCr;
                 _emittedDirectCallTargets = previousDirectCallTargets;
                 _emittedLocalLabelAddresses = previousLocalLabels;
                 _activeGpuFifoBurstSlot = previousFifoBurstSlot;
