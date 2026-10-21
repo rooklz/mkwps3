@@ -429,6 +429,16 @@ void Listener(void*)
                 } else {
                     SendText(c, "usage: peek <hex addr> <hex len>\n");
                 }
+            } else if (!std::strncmp(cmd, "poke ", 5)) {
+                // One 32-bit guest word: `poke <hex addr> <hex value>`.
+                unsigned addr = 0, value = 0;
+                uint8_t* arena = MkwGuestArenaBase();
+                if (std::sscanf(cmd + 5, "%x %x", &addr, &value) == 2 && arena && !(addr & 3u)) {
+                    *reinterpret_cast<volatile uint32_t*>(arena + (addr & 0x3FFFFFFFu)) = value;
+                    SendText(c, "written\n");
+                } else {
+                    SendText(c, "usage: poke <hex addr> <hex value> (word-aligned)\n");
+                }
             } else if (!std::strncmp(cmd, "dinfo ", 6)) {
                 // State, vertices and texgens of draw <n> of the next frame, or of the first draw
                 // sampling texture <hex addr> with `dinfo t<addr>`, to the log.
@@ -469,7 +479,7 @@ void Listener(void*)
             } else if (!std::strncmp(cmd, "fault", 5))
                 SendText(c, g_faultReport[0] ? g_faultReport : "no fault\n");
             else
-                SendText(c, "commands: ping, relaunch, put <path> <size>, cat <path>, ctx <guest|gpu>, pcs <secs>, where, fault, shot, ftrace [n], cshot <n>, dinfo <n>|t<addr>|s<stages>, dwin <min> <max>, dskip <min> <max>, tevshow ras|tex|off, xfshow mat|light|red|attr|off, peek <addr> <len>, gfx, prof, pad <hex> <reads> [x y], bench\n");
+                SendText(c, "commands: ping, relaunch, put <path> <size>, cat <path>, ctx <guest|gpu>, pcs <secs>, where, fault, shot, ftrace [n], cshot <n>, dinfo <n>|t<addr>|s<stages>, dwin <min> <max>, dskip <min> <max>, tevshow ras|tex|off, xfshow mat|light|red|attr|off, peek <addr> <len>, poke <addr> <value>, gfx, prof, pad <hex> <reads> [x y], bench\n");
         }
         netClose(c);
     }

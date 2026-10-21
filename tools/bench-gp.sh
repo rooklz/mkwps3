@@ -28,13 +28,17 @@ racing() {
         sed -n "s/.*busy -\{0,1\}\([0-9]*\)%.* draws \([0-9]*\) verts.*/\1 \2/p" |
         awk '{ ok = $1 >= 70 && $2 >= 800000 } END { exit !ok }'
 }
+# AUTO=0: drive the player's kart by holding accelerate (it ends up in a wall)
+# instead of handing it to the game's CPU driver like the other eleven.
+AUTO=${AUTO:-1}
 i=0
 until racing; do
     i=$((i + 1)); [ $i -gt 20 ] && { echo "did not reach the race"; exit 1; }
+    [ "$AUTO" = 1 ] && tools/ps3-autodrive.sh >/dev/null
     press 6
 done
 sleep 60
-tools/ps3-pad.sh a 6000 >/dev/null
+[ "$AUTO" = 1 ] || tools/ps3-pad.sh a 6000 >/dev/null
 # PCS=<seconds>: also take a guest profile inside the measured windows.
 if [ -n "$PCS" ]; then
     sleep 5
