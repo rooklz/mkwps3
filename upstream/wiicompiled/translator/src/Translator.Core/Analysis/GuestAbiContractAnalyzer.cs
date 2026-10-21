@@ -228,6 +228,9 @@ public static class GuestAbiContractAnalyzer
             }
         } while (changed);
 
+        var frameSaveLrReads = GuestEabiVisibility.ElidesFrameLr
+            ? FindFrameSaveLinkRegisterReads(function)
+            : null;
         var readBeforeWrite = RegisterSet.Empty;
         var possibleWrites = RegisterSet.Empty;
         var directTargets = new SortedSet<uint>();
@@ -242,6 +245,9 @@ public static class GuestAbiContractAnalyzer
             {
                 var instruction = instructions[position];
                 var instructionReads = Reads(instruction, calleeContracts).Except(written);
+                if (frameSaveLrReads is not null && (instruction is IrPhi || frameSaveLrReads.Contains(instruction)))
+                    instructionReads = instructionReads with { Lr = false };
+
                 readBeforeWrite = readBeforeWrite.Union(instructionReads);
                 nonvolatileInputs = nonvolatileInputs.Union(NonvolatileInputs(
                     instruction, Reads(instruction, calleeContracts).Except(mustWritten), calleeContracts));
@@ -437,6 +443,65 @@ public static class GuestAbiContractAnalyzer
         first = string.Empty;
         second = string.Empty;
         return 0;
+    }
+
+    /// <summary>
+    /// The LR reads that only save LR in the stack frame (<c>mflr rN</c> whose rN goes nowhere but
+    /// <c>r1</c>-relative stores before it is next written, all in its block), when every LR read in
+    /// the function is one -- then the SSA merges of LR feed nothing either, and the function
+    /// doesn't read LR at all. Null when some other read exists, and the function keeps its LR read
+    /// (<see cref="GuestEabiVisibility.ElidesFrameLr"/>).
+    /// </summary>
+    internal static IReadOnlySet<IrInstruction>? FindFrameSaveLinkRegisterReads(IrFunction function)
+    {
+        var saves = new HashSet<IrInstruction>(ReferenceEqualityComparer.Instance);
+        foreach (var block in function.Blocks)
+        {
+            var instructions = block.Instructions;
+            for (var index = 0; index < instructions.Count; ++index)
+            {
+                var instruction = instructions[index];
+                if (instruction is IrPhi)
+                    continue;                  // an SSA merge names LR but reads nothing
+                var readsLr = false;
+                foreach (var use in IrRegisterDataFlow.Uses(instruction))
+                    readsLr |= RegisterNameUtils.HardwareBase(use).Equals("lr", StringComparison.OrdinalIgnoreCase);
+                if (!readsLr)
+                    continue;
+                if (instruction is not IrAssign { Value.Kind: "register" } assign ||
+                    !IsFrameSave(instructions, index, RegisterNameUtils.HardwareBase(assign.Destination)))
+                    return null;
+                saves.Add(instruction);
+            }
+        }
+        return saves;
+
+        static bool IsFrameSave(IReadOnlyList<IrInstruction> instructions, int index, string register)
+        {
+            if (register.Length < 2 || register[0] is not ('r' or 'R'))
+                return false;
+            var stored = false;
+            for (var next = index + 1; next < instructions.Count; ++next)
+            {
+                var instruction = instructions[next];
+                var uses = false;
+                foreach (var use in IrRegisterDataFlow.Uses(instruction))
+                    uses |= RegisterNameUtils.HardwareBase(use).Equals(register, StringComparison.OrdinalIgnoreCase);
+                if (uses)
+                {
+                    if (instruction is not IrStore { Source.Kind: "register" } store ||
+                        !RegisterNameUtils.HardwareBase(store.Source.RegisterName!).Equals(register, StringComparison.OrdinalIgnoreCase) ||
+                        !RegisterNameUtils.HardwareBase(store.Address.Base).Equals("r1", StringComparison.OrdinalIgnoreCase) ||
+                        RegisterNameUtils.HardwareBase(store.Address.Base).Equals(register, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    stored = true;
+                }
+                foreach (var definition in IrRegisterDataFlow.Definitions(instruction))
+                    if (RegisterNameUtils.HardwareBase(definition).Equals(register, StringComparison.OrdinalIgnoreCase))
+                        return stored;
+            }
+            return false;
+        }
     }
 
     private static RegisterSet Reads(
