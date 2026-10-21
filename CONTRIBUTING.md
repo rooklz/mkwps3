@@ -1,6 +1,8 @@
 # Contributing to MKW PS3
 
-Cheers for wanting to help. Here's how it works.
+Cheers for wanting to help. Here's how it works. The practical side (building, testing,
+the console tools and the things the PS3 will catch you out with) is in
+[AGENTS.md](AGENTS.md), which is also what coding agents read.
 
 ## The short version
 
@@ -34,18 +36,24 @@ Questions, ideas and "has anyone tried this on HEN?" are better off in
   ways nothing else is, and "it compiles" doesn't mean much here.
 - **Keep to the style of the code around it.** Same naming, same comment density, same idioms.
 - **Run the tests** (see [docs/BUILDING.md](docs/BUILDING.md#tests)). CI runs them too.
-- **Speed changes need numbers.** `tools/bench-gp.sh` before and after, on the same build
-  otherwise.
+- **Speed changes need numbers.** `tools/bench-gp.sh 8` before and after, on the same
+  console.
 - **Commits** should have a short first line saying what changed, and a body saying why if
   it's not obvious.
 
 ### Where help would make the biggest difference
 
-- **The renderer.** Mii heads come out as black squares, and there'll be other effects that
-  aren't quite right yet. Anyone who knows the RSX or the Wii's TEV well would be a huge help.
-- **Speed.** Anything that gets the game thread from ~23ms a frame towards 16.7ms. The audio mix
-  moving to an SPU is the next big obvious one.
-- **Testing** on hardware other than mine: Slims, Super Slims, HEN, different firmwares.
+Everything known is in the [issues](https://github.com/rooklz/mkwps3/issues). Good places
+to start:
+
+- **Speed.** The [full-speed tracking issue](https://github.com/rooklz/mkwps3/issues/20)
+  breaks down where the time goes and what's been tried.
+- **The renderer.** Mii heads come out as black squares (#4). Anyone who knows the RSX or the
+  Wii's TEV well would be a huge help.
+- **Testing** on hardware other than mine: Slims, Super Slims, HEN, different firmwares
+  (#14), and the game modes and settings that haven't had much play (`needs hardware`).
+
+Comment on an issue before starting anything big, so two people don't do the same work.
 
 ## If you use AI tools
 

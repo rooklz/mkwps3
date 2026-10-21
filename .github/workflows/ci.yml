@@ -20,7 +20,7 @@ jobs:
       - run: dotnet test upstream/wiicompiled/translator/Translator.sln -c Release
 
   audio:
-    name: Audio decoder tests
+    name: Audio tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
