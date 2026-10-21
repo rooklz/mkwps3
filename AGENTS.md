@@ -54,7 +54,7 @@ Everything is driven remotely (setup in [docs/BUILDING.md](docs/BUILDING.md#the-
 | `bench-gp.sh [frames]` | The benchmark: the same race every run (fixed random seeds, the CPU driver at the wheel), timed over race frames 600 to 3000 |
 | `ps3-shot.sh [file]` | Screenshot of the next frame |
 | `ps3-pad.sh` | Presses buttons on a virtual controller |
-| `ps3-pcs.sh` | Profiles the translated game code by function (call stacks need a build translated with `MKW_GUEST_STACKS=1`) |
+| `ps3-pcs.sh` | Profiles the translated game code by function (exact attribution needs a build translated with `MKW_CALL_MARKS=1`, call stacks `MKW_GUEST_STACKS=1` as well) |
 | `ps3-hprof.sh <gpu\|game>` | Profiles the renderer and FIFO parser by function (needs a `MKW_HPROF=1` build) |
 | `ps3-slow.sh [secs]` | Which guest functions take the memory slow paths, by name |
 | `ps3-recover.sh` | Hard-reboots the console through webMAN when the RSX has locked up |

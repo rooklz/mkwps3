@@ -12,7 +12,7 @@ public sealed partial class CxxLinearCodeGenerator
     /// <summary>
     /// Guest address of the body being emitted, for <c>MKW_FN_MARK</c>: a sampler on another host
     /// thread reads the mark to attribute time to the guest function actually executing. Emitted on
-    /// entry and after every call returns, so time spent after a callee comes back is the caller's.
+    /// entry, and in a profiling build after every call returns too (<see cref="MarksAfterCalls"/>).
     /// </summary>
     [ThreadStatic]
     private static uint? _markAddress;
@@ -71,9 +71,30 @@ public sealed partial class CxxLinearCodeGenerator
         return null;
     }
 
+    /// <summary>
+    /// Whether a mark follows every call as well as the entry. Without them the sampler blames the
+    /// caller's time after a call on the callee, so a build for profiling wants them
+    /// (<c>MKW_CALL_MARKS=1</c>); otherwise they are a thread-local store after each of nearly a
+    /// hundred thousand call sites, for nothing.
+    /// </summary>
+    private static bool MarksAfterCalls =>
+        Environment.GetEnvironmentVariable("MKW_CALL_MARKS") == "1";
+
     private static void AppendFunctionMark(StringBuilder sb, string pad)
     {
-        if (_markAddress is { } address)
+        if (MarksAfterCalls && _markAddress is { } address)
+        {
+            sb.AppendLine($"{pad}MKW_FN_MARK(0x{address:X8}u);");
+        }
+    }
+
+    /// <summary>
+    /// A mark ahead of a time base read when calls leave none (<see cref="MarksAfterCalls"/>):
+    /// <c>PPC_Mftb</c> tells the reads it fixes for a repeatable benchmark by the mark.
+    /// </summary>
+    private static void AppendTimeBaseMark(StringBuilder sb, string pad)
+    {
+        if (!MarksAfterCalls && _markAddress is { } address)
         {
             sb.AppendLine($"{pad}MKW_FN_MARK(0x{address:X8}u);");
         }
