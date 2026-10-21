@@ -960,9 +960,31 @@ static void emit_fog(FPEmitter *e, const BPState *bp)
             fp_temp(TEV_REG_TMP1), fp_temp(TEV_REG_PREV));
 }
 
-/* Which texture-coordinate interpolants a generated program reads. The RSX
- * routes only the ones named here, and an unnamed coordinate is left in its
- * default 2D configuration -- two live components and two frozen ones. */
+/* GXSetDstAlpha (see tev_program.h). */
+int tev_const_dst_alpha(const BPState *bp, unsigned *value)
+{
+    u32 r = bp->raw[0x42];
+    if (!((r >> 8) & 1u))
+        return 0;
+    *value = r & 0xFFu;
+    return 1;
+}
+
+int tev_writes_const_alpha(const BPState *bp, unsigned *value)
+{
+    const BPAlphaTest *at = &bp->alpha_test;
+    unsigned c0 = at->comp0 & 7u, c1 = at->comp1 & 7u;
+    int test_always = (at->logic & 3u) == 0 ? (c0 == 7u && c1 == 7u)
+                    : (at->logic & 3u) == 1 ? (c0 == 7u || c1 == 7u) : 0;
+    int blend_reads_src_alpha = bp->blend.blend_enable && !bp->blend.subtract &&
+        ((bp->blend.src_factor & 7u) == 4u || (bp->blend.src_factor & 7u) == 5u ||
+         (bp->blend.dst_factor & 7u) == 4u || (bp->blend.dst_factor & 7u) == 5u);
+    if (!tev_const_dst_alpha(bp, value))
+        return 0;
+    return test_always && !blend_reads_src_alpha;
+}
+
+/* Every texture map the program samples (tev_program.h). */
 u32 tev_texmap_mask(const BPState *bp)
 {
     unsigned stages = bp_tev_stage_count(bp);
@@ -982,6 +1004,9 @@ u32 tev_texmap_mask(const BPState *bp)
     return mask;
 }
 
+/* Which texture-coordinate interpolants a generated program reads. The RSX
+ * routes only the ones named here, and an unnamed coordinate is left in its
+ * default 2D configuration -- two live components and two frozen ones. */
 u32 tev_texcoord_mask(const BPState *bp)
 {
     unsigned stages = bp_tev_stage_count(bp);
@@ -1252,6 +1277,12 @@ int tev_generate(const BPState *bp, FPEmitter *e, TevProgramInfo *info)
             fp_emit(e, FP_OP_MOV, 0, FP_MASK_ALL, FP_PREC_FP32, 0,
                     fp_temp(TEV_REG_PREV), fp_none(), fp_none());
     }
+    {   /* GXSetDstAlpha, where the program can carry it (see tev_writes_const_alpha). */
+        unsigned k;
+        if (tev_writes_const_alpha(bp, &k))
+            fp_emit(e, FP_OP_MOV, 0, FP_MASK_W, FP_PREC_FP32, 0,
+                    fp_imm(0.0f, 0.0f, 0.0f, (float)k / 255.0f), fp_none(), fp_none());
+    }
     fp_finish(e);
 
     /* Counted rather than accumulated, because an instruction that takes a
@@ -1315,6 +1346,9 @@ u64 tev_state_hash(const BPState *bp)
 
     MIX(stages);
     MIX(g_tev_intensity_maps);
+    {   unsigned k9;
+        MIX(tev_writes_const_alpha(bp, &k9) ? 0x100u | k9 : 0u);
+    }
     MIX(bp->genmode.num_texgens);
     MIX(bp->genmode.num_colorchans);
 

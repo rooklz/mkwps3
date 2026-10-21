@@ -163,6 +163,16 @@ int tev_generate(const BPState *bp, FPEmitter *e, TevProgramInfo *info);
  * and the indirect lookups'. Every one of them has to be bound for the draw. */
 u32 tev_texmap_mask(const BPState *bp);
 
+/* GXSetDstAlpha: BP 0x42 bit 8 makes the EFB store a constant alpha (bits 0-7)
+ * in place of the fragment's. Returns 1 and the constant when it is on. */
+int tev_const_dst_alpha(const BPState *bp, unsigned *value);
+
+/* Whether the generated program outputs that constant as its alpha itself: only
+ * where nothing downstream still needs the fragment's own alpha, i.e. no alpha
+ * test and no colour blend factor reading source alpha. The pipeline state
+ * (gx_render.c) handles every other case through the blender. */
+int tev_writes_const_alpha(const BPState *bp, unsigned *value);
+
 /* Which texture-coordinate interpolants the generated fragment program reads,
  * as a bit per coordinate. The RSX routes only the coordinates named here. */
 u32 tev_texcoord_mask(const BPState *bp);

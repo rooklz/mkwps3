@@ -2490,6 +2490,31 @@ static u32 s_pipe_key[8];
 static int s_pipe_key_valid;
 void pipeline_state_cache_invalidate(void) { s_pipe_key_valid = 0; }
 
+/* GXSetDstAlpha: the EFB keeps a constant alpha instead of the fragment's. The
+ * shader cannot simply output the constant, because the alpha test and source-
+ * alpha blending still need the real one, so the blender writes it: alpha
+ * factors ZERO/ZERO store 0 exactly, and ONE/ZERO store what the program output
+ * when it is the one carrying the constant (tev_writes_const_alpha). Colour
+ * blending is left as the draw asked (pass-through when it does not blend).
+ * Mario Kart Wii's karts set alpha 0 this way; storing their own alpha instead
+ * left a value the later shadow pass blends by, and it painted them dark. */
+static void apply_const_dst_alpha(gcmContextData *c, const BPState *bp, int has_dst_alpha,
+                                  u32 color_src, u32 color_dst)
+{
+    unsigned k;
+    if (!has_dst_alpha || !bp->blend.alpha_update || bp->blend.subtract || bp->blend.logic_enable)
+        return;
+    if (tev_writes_const_alpha(bp, &k)) {
+        rsxSetBlendEnable(c, GCM_TRUE);
+        rsxSetBlendFunc(c, color_src, color_dst, GCM_ONE, GCM_ZERO);
+        rsxSetBlendEquation(c, GCM_FUNC_ADD, GCM_FUNC_ADD);
+    } else if (tev_const_dst_alpha(bp, &k) && k == 0u) {
+        rsxSetBlendEnable(c, GCM_TRUE);
+        rsxSetBlendFunc(c, color_src, color_dst, GCM_ZERO, GCM_ZERO);
+        rsxSetBlendEquation(c, GCM_FUNC_ADD, GCM_FUNC_ADD);
+    }
+}
+
 static void apply_pipeline_state(gcmContextData *c, const BPState *bp)
 {
     if (g_gx_state_mask == 0) return;   /* known-good baseline */
@@ -2559,6 +2584,7 @@ static void apply_pipeline_state(gcmContextData *c, const BPState *bp)
             rsxSetBlendEquation(c, GCM_FUNC_ADD, GCM_FUNC_ADD);
         }
         rsxSetLogicOpEnable(c, GCM_FALSE);
+        apply_const_dst_alpha(c, bp, has_dst_alpha, gx_src_factor_to_gcm(s), gx_dst_factor_to_gcm(d));
     } else if (bp->blend.logic_enable) {
         /* On GX the logic op replaces blending rather than following it, so
          * the two are never both live. GX numbers its sixteen operations the
@@ -2569,6 +2595,7 @@ static void apply_pipeline_state(gcmContextData *c, const BPState *bp)
     } else {
         rsxSetBlendEnable(c, GCM_FALSE);
         rsxSetLogicOpEnable(c, GCM_FALSE);
+        apply_const_dst_alpha(c, bp, has_dst_alpha, GCM_ONE, GCM_ZERO);
     }
 
 after_blend:
