@@ -16,6 +16,9 @@ The first public version.
   convention, native single-precision maths, and fewer pointless save-and-reload pairs. Together
   with the system functions now done natively, a race frame went from about 35ms to 23ms on the
   game thread.
+- **Races run at about 38fps instead of 30.** The renderer has a fourth display buffer, so a
+  frame no longer waits on the flip before last.
+- **The audio mix runs on an SPU.** Checked against the PPU mixer bit for bit.
 - **Karts and drivers look right.** They were dark silhouettes in races; the game asks for a
   fixed alpha on them that wasn't being honoured. Lights were also the wrong colour.
 - **Bloom works.** It used to wash the screen out everywhere but the top-left corner.

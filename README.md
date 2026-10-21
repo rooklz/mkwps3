@@ -56,7 +56,7 @@ It's very much a work in progress, but it's further along than you might expect.
 | ✅ Sound and music | Mixed on the console in real time |
 | ✅ Saves and licences | Kept on the PS3's hard drive |
 | ✅ DualShock 3 | Presented to the game as a GameCube controller |
-| ⚠️ Speed | Around **30fps** in races. 60 is the goal and the main thing I'm working on |
+| ⚠️ Speed | Around **38fps** in races. 60 is the goal and the main thing I'm working on |
 | ✅ Karts and characters | Properly lit and coloured now (they used to be dark silhouettes) |
 | ⚠️ Some effects | Mii heads come out as black squares, so the crowd looks a bit odd. There'll be other bits that aren't quite right yet too |
 | ❓ VS, Time Trials, Battle | Should work, but they've had a lot less testing |
@@ -166,11 +166,12 @@ The translation is pinned to the exact PAL executable, same as WiiCompiled. Othe
 would need their own work, and a wrong-version disc gives you a subtly broken game,
 so the build refuses anything that isn't a clean `RMCP01`.
 
-**Why 30fps, and will it hit 60?**
+**Why not 60fps yet, and will it get there?**
 The PS3's main CPU core has to get through about eight million of the Wii's instructions
-every frame, plus everything the Wii's other chips did for free. It's about 23ms a frame
+every frame, plus everything the Wii's other chips did for free. It's about 22ms a frame
 right now and it needs to be under 16.7ms for 60. It keeps getting faster, so yeah,
-that's the plan.
+that's the plan. Until then the game runs a bit slower than it does on a Wii, because it
+counts time in frames.
 
 **Does it work on a Slim or Super Slim?**
 It should. They've all got the same Cell and RSX inside. If yours can run homebrew,

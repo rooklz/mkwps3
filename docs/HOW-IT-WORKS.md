@@ -57,18 +57,19 @@ hardware. All of that is reimplemented ("high-level emulation", HLE) in `runtime
 
 ## Where the time goes
 
-At the moment a race frame costs the game thread about 23ms on the PS3, against the
-16.7ms it needs for 60fps. The PS3 only shows a frame every 16.7ms or 33.3ms, so that
-means 30fps.
+At the moment a race frame costs the game thread about 22ms on the PS3, against the
+16.7ms it needs for 60fps, which works out at around 38fps. (It was stuck at 30 until the
+renderer got a fourth display buffer: with three, every frame waited up to two vblanks for
+the previous flip.)
 
 The game itself is most of that: the PPE has to get through roughly eight million of the
 Wii's instructions every frame, at around nine PS3 cycles each. The rest is the parts the
-Wii had dedicated hardware for. The audio mix, for example, has been cut from about 4.7ms
-to 2.8ms a frame so far.
+Wii had dedicated hardware for. The audio mix, for example, went from about 4.7ms to
+2.8ms a frame on the PPE, and now runs on an SPU instead.
 
 The plan from here is more of the same: better code from the translator, more of the
-hottest system functions done natively, and moving work that doesn't need the PPE (the
-audio mix is next in line) onto the SPUs.
+hottest system functions done natively, and moving work that doesn't need the PPE onto
+the SPUs, the way the vertex work and the audio mix already have.
 
 ## Where to look in the code
 
