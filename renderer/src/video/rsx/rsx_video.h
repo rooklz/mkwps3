@@ -12,11 +12,16 @@
 
 /* Double buffering. Two is enough: the emulator waits for flip completion
  * before drawing again, so a third buffer would only add latency. */
-/* Triple buffered. With two buffers the emulator had to wait for the flip to
- * retire before drawing again, which the phase profiler measured at 35.6% of
- * every frame spent asleep in the vsync wait. A third buffer means there is
- * always one free to draw into. */
-#define RSX_BUFFERS 3
+/* Quadruple buffered. A presented buffer is flipped from the vblank interrupt
+ * at the first vblank after the RSX finishes it, and the flip itself lands a
+ * vblank later, so up to two vblanks pass before the buffer it replaces comes
+ * free. With three buffers (one on screen, one waiting to flip, one being
+ * drawn) the next frame waited for that every time: a race frame needs about
+ * 24 ms of the game, but presentation could not go faster than 33 ms, and the
+ * GPU thread slept ~9 ms a frame for a buffer. A fourth means the wait is on a
+ * flip two frames old, which has long landed at these frame times. (Two
+ * buffers, before that, spent 35.6% of every frame asleep.) */
+#define RSX_BUFFERS 4
 
 typedef struct {
     int  inited;
