@@ -36,7 +36,7 @@ Questions, ideas and "has anyone tried this on HEN?" are better off in
   ways nothing else is, and "it compiles" doesn't mean much here.
 - **Keep to the style of the code around it.** Same naming, same comment density, same idioms.
 - **Run the tests** (see [docs/BUILDING.md](docs/BUILDING.md#tests)). CI runs them too.
-- **Speed changes need numbers.** `tools/bench-gp.sh 8` before and after, on the same
+- **Speed changes need numbers.** `tools/bench-gp.sh` before and after, on the same
   console.
 - **Commits** should have a short first line saying what changed, and a body saying why if
   it's not obvious.

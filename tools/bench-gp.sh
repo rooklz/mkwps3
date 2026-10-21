@@ -1,16 +1,30 @@
 #!/bin/sh
-# bench-gp.sh [windows] -- the repeatable benchmark: relaunch, drive the menus
+# bench-gp.sh [frames] -- the repeatable benchmark: relaunch, drive the menus
 # to a 50cc Mushroom Cup Grand Prix (Luigi Circuit, 12 karts) with injected
-# pad input, hold accelerate, and average the 5-second stats windows of the
-# race: fps, game-thread and GPU-thread milliseconds per frame, calls per frame.
+# pad input, hand the player's kart to the game's CPU driver, and measure a
+# fixed stretch of the race: race frames 600 to 600+frames (default 2400, about
+# 40 seconds of game time). The random seeds are fixed for the run
+# (mkwii-fixedseed.txt), so every run races the same race and the numbers only
+# move when the code does.
+#
+# Prints fps, and game-thread and GPU-thread milliseconds per race frame.
 . "$(dirname "$0")/local.env" 2>/dev/null || true
 cd "$(dirname "$0")/.."
-N=${1:-6}
+FRAMES=${1:-2400}
+START=${START:-600}
+FTP="ftp://$PS3_IP:${PS3_FTP_PORT:-21}"
+ctl() { printf '%s' "$1" | nc -w 3 "$PS3_IP" 4001; }
 press() { tools/ps3-pad.sh a 4 >/dev/null; sleep "$1"; }
-printf relaunch | nc -w 3 "$PS3_IP" 4001 >/dev/null
+# FIXED=0: let the game seed its random numbers from the clock as usual.
+FIXED=${FIXED:-1}
+if [ "$FIXED" = 1 ]; then
+    printf 1 | curl -s -T - "$FTP/dev_hdd0/tmp/mkwii-fixedseed.txt"
+    trap 'curl -s -Q "DELE /dev_hdd0/tmp/mkwii-fixedseed.txt" "$FTP/" >/dev/null 2>&1' EXIT
+fi
+ctl relaunch >/dev/null
 sleep 12
 i=0
-until [ "$(printf ping | nc -w 2 "$PS3_IP" 4001 2>/dev/null)" = "alive" ]; do
+until [ "$(ctl ping 2>/dev/null)" = "alive" ]; do
     i=$((i + 1)); [ $i -gt 30 ] && { echo "app did not come back"; exit 1; }
     sleep 2
 done
@@ -19,14 +33,11 @@ sleep 25
 # vehicle, drift, Mushroom Cup, OK
 press 5; press 5; press 6; press 8; press 12; press 9; press 9; press 9; press 9; press 10
 # Menus swallow a press now and then during transitions: keep confirming until
-# the stats show race-level work (the game thread at least 70% busy while the
-# GX stream carries race-sized draw counts), then hold accelerate for the
-# measurement. Neither needs the renderer, so this also works with
-# /dev_hdd0/tmp/mkwii-norender.txt in place.
+# the race scene exists, and not a press after it -- with the CPU driving the
+# player's kart, a press in the race switches the spectator camera, and the
+# run would no longer be the same race.
 racing() {
-    tools/ps3-log.sh | grep "^\[stats\]" | tail -1 |
-        sed -n "s/.*busy -\{0,1\}\([0-9]*\)%.* draws \([0-9]*\) verts.*/\1 \2/p" |
-        awk '{ ok = $1 >= 70 && $2 >= 800000 } END { exit !ok }'
+    ctl mark | grep -q ' race 1$'
 }
 # AUTO=0: drive the player's kart by holding accelerate (it ends up in a wall)
 # instead of handing it to the game's CPU driver like the other eleven.
@@ -35,36 +46,47 @@ i=0
 until racing; do
     i=$((i + 1)); [ $i -gt 20 ] && { echo "did not reach the race"; exit 1; }
     [ "$AUTO" = 1 ] && tools/ps3-autodrive.sh >/dev/null
-    press 6
+    tools/ps3-pad.sh a 4 >/dev/null
+    j=0
+    while [ $j -lt 12 ] && ! racing; do sleep 0.5; j=$((j + 1)); done
 done
-sleep 60
 [ "$AUTO" = 1 ] || tools/ps3-pad.sh a 6000 >/dev/null
-# PCS=<seconds>: also take a guest profile inside the measured windows.
-if [ -n "$PCS" ]; then
-    sleep 5
-    tools/ps3-pcs.sh "$PCS" 60 > "${TMPDIR:-/tmp}/bench-pcs.txt" 2>&1
-    sleep $((N * 5 + 7 - PCS))
-else
-    sleep $((N * 5 + 12))
-fi
-tools/ps3-log.sh | grep "^\[stats\]" | tail -n "$N" | python3 -c '
-import re, sys
-rows = []
-for line in sys.stdin:
-    m = re.search(r"([\d.]+) fps, game thread busy (-?\d+)%.*?gpu (\d+) ms", line)
-    if m:
-        u = re.search(r"([\d.]+) us/call", line)
-        rows.append(tuple(float(x) for x in m.groups()) + (float(u.group(1)) if u else 0.0,))
-if not rows:
-    sys.exit("no stats")
-frames = sum(r[0] * 5 for r in rows)
-game = sum(r[1] / 100 * 5000 for r in rows)
-gpu = sum(r[2] for r in rows)
-us = [r[3] for r in rows if r[3]]
-line = f"{len(rows)} windows: {frames / (5 * len(rows)):.1f} fps, game {game / max(frames, 1):.1f} ms/frame, " \
-       f"gpu {gpu / max(frames, 1):.1f} ms/frame, busy {game / (5000 * len(rows)) * 100:.0f}%"
-if us:
-    line += f", {sum(us) / len(us):.3f} us/call"
-print(line)
+# Wait for a race frame, polling the counters; prints the mark line.
+mark_at() {
+    i=0
+    while :; do
+        m=$(ctl mark)
+        f=$(printf '%s' "$m" | sed -n 's/^frame \([0-9]*\) .*/\1/p')
+        [ -n "$f" ] && [ "$f" -ge "$1" ] && { printf '%s\n' "$m"; return 0; }
+        i=$((i + 1)); [ $i -gt 1200 ] && return 1
+        sleep 0.25
+    done
+}
+a=$(mark_at "$START") || { echo "the race never reached frame $START"; exit 1; }
+# PCS=<seconds>: also take a guest profile inside the measured stretch.
+[ -n "$PCS" ] && tools/ps3-pcs.sh "$PCS" 60 > "${TMPDIR:-/tmp}/bench-pcs.txt" 2>&1
+# SEGMENT=<frames>: also report each stretch of that many frames.
+marks=$a
+f=$START
+while [ "$f" -lt $((START + FRAMES)) ]; do
+    f=$((f + ${SEGMENT:-FRAMES}))
+    [ "$f" -gt $((START + FRAMES)) ] && f=$((START + FRAMES))
+    m=$(mark_at "$f") || { echo "the race never reached frame $f"; exit 1; }
+    marks="$marks
+$m"
+done
+[ -n "$MARKS" ] && printf '%s\n' "$marks" >&2
+printf '%s\n' "$marks" | python3 -c '
+import sys
+rows = [[int(x) for x in line.split()[1:9:2]] for line in sys.stdin.read().split("\n") if line]
+def show(a, b, label):
+    (f0, n0, i0, g0), (f1, n1, i1, g1) = a, b
+    frames, wall = f1 - f0, (n1 - n0) / 1e6
+    print(f"{label}race frames {f0}-{f1}: {frames / wall * 1000:.1f} fps, "
+          f"game {(wall - (i1 - i0) / 1e6) / frames:.2f} ms/frame, gpu {(g1 - g0) / 1e6 / frames:.2f} ms/frame")
+if len(rows) > 2:
+    for a, b in zip(rows, rows[1:]):
+        show(a, b, "  ")
+show(rows[0], rows[-1], "")
 '
 tools/ps3-shot.sh "${TMPDIR:-/tmp}/bench-gp.png" >/dev/null 2>&1

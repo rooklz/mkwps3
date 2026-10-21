@@ -6,7 +6,7 @@
 
 <!-- On a real PS3? Model, firmware, CFW or HEN. If it hasn't run on a console, say so. -->
 
-<!-- Speed changes: tools/bench-gp.sh 8, before and after, same console. -->
+<!-- Speed changes: tools/bench-gp.sh, before and after, same console. -->
 <!-- Visual changes: before and after screenshots, and how you compared with the real game. -->
 
 ## Checklist
