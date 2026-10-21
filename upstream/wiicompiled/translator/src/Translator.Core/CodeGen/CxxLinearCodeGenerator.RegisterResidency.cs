@@ -489,6 +489,37 @@ public sealed partial class CxxLinearCodeGenerator
     }
 
     /// <summary>
+    /// The boundary of an EABI call through a register (a virtual call, a callback): everything
+    /// published and only the results reloaded (<see cref="ResidencyBoundarySync.EabiFencedCall"/>),
+    /// less what the EABI says the target can't read. The target address travels as an argument,
+    /// so CTR needn't be in the context; r0 is never an argument; CR goes out only if this body
+    /// changed cr1-cr4; and what the context already holds isn't published again.
+    /// </summary>
+    private static ResidencyBoundarySync ResolveIndirectCallBoundarySync(IrInstruction call)
+    {
+        var sync = ResidencyBoundarySync.EabiFencedCall;
+        if (!GuestEabiVisibility.NarrowsCallFlushes)
+        {
+            return sync;
+        }
+
+        sync = sync with { FlushesCtr = false, FlushGprMask = sync.FlushGprMask & ~1u };
+        if (_bodyKeepsCallCr)
+        {
+            sync = sync with { FlushesCr = false };
+        }
+        if (_callFlushDirtiness is { } plan && plan.TryGetValue(call, out var dirty))
+        {
+            sync = sync with
+            {
+                FlushGprMask = sync.FlushGprMask & dirty.Gpr,
+                FlushFprMask = sync.FlushFprMask & dirty.Fpr
+            };
+        }
+        return sync;
+    }
+
+    /// <summary>
     /// Removes an explicit helper destination register from a helper-effect
     /// reload mask. The destination local holds the helper's return value; the
     /// implicit-context reload must not overwrite it.
