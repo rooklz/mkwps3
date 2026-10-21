@@ -16,8 +16,10 @@ The first public version.
   convention, native single-precision maths, and fewer pointless save-and-reload pairs. Together
   with the system functions now done natively, a race frame went from about 35ms to 23ms on the
   game thread.
-- **Races run at about 38fps instead of 30.** The renderer has a fourth display buffer, so a
-  frame no longer waits on the flip before last.
+- **Faster races.** The renderer has a fourth display buffer, so a frame no longer waits on the
+  flip before last, and its profiler is off unless asked for.
+- **Honest benchmarks.** The race benchmark hands the player's kart to the game's own CPU
+  driver instead of holding accelerate into a wall.
 - **The audio mix runs on an SPU.** Checked against the PPU mixer bit for bit.
 - **Karts and drivers look right.** They were dark silhouettes in races; the game asks for a
   fixed alpha on them that wasn't being honoured. Lights were also the wrong colour.

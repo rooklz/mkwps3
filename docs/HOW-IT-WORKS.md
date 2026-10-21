@@ -57,10 +57,11 @@ hardware. All of that is reimplemented ("high-level emulation", HLE) in `runtime
 
 ## Where the time goes
 
-At the moment a race frame costs the game thread about 22ms on the PS3, against the
-16.7ms it needs for 60fps, which works out at around 38fps. (It was stuck at 30 until the
-renderer got a fourth display buffer: with three, every frame waited up to two vblanks for
-the previous flip.)
+At the moment a full race costs the game thread about 27ms a frame on the PS3, against
+the 16.7ms it needs for 60fps, and the thread that turns the game's graphics commands into
+RSX ones needs about 22ms. The two share the PPE, so each slows the other down. That works
+out at around 30fps. (The benchmark lets the game's own CPU driver race the player's kart,
+so it sees the same track and traffic a real race does.)
 
 The game itself is most of that: the PPE has to get through roughly eight million of the
 Wii's instructions every frame, at around nine PS3 cycles each. The rest is the parts the
