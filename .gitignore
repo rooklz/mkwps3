@@ -24,6 +24,7 @@ upstream/wiicompiled/translator/tests/**/obj/
 /tools/local.env
 # Host test binaries
 /tests/audio/ax_decode_test
+/tests/audio/ax_spu_test
 # Built packages
 /out/
 /tests/renderer/tevdump
