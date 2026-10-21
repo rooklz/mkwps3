@@ -62,6 +62,13 @@ public static class GuestEabiVisibility
     public static readonly bool TrustFences =
         Enabled && Environment.GetEnvironmentVariable("MKW_EABI_FENCES") != "0";
 
+    /// <summary>
+    /// A narrowed body publishes CR fields 2-4 and no XER at its return, so flags it leaves in the others
+    /// are dead there (<c>MKW_EABI_RETURN_FLAGS=0</c> keeps them all live).
+    /// </summary>
+    public static readonly bool NarrowsReturnFlags =
+        Enabled && Environment.GetEnvironmentVariable("MKW_EABI_RETURN_FLAGS") != "0";
+
     public const uint LocalGpr = 0xFFFFC000u;  // r14-r31
     public const uint LocalFpr = 0xFFFFC000u;  // f14-f31
 

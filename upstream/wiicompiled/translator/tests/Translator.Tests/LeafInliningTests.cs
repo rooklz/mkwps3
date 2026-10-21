@@ -161,12 +161,15 @@ public class LeafInliningTests
         // the call because the producing compare lives in another function.
         Assert.Contains("InvokeDirectCpu<0x80000100u>(ctx);", reference.CxxCode, StringComparison.Ordinal);
         Assert.Equal(2, CountOccurrences(reference.CxxCode, "cr = ctx->cr;"));
-        // With inlining the compare writes the caller's resident CR directly and
-        // the branch reads it with no context round trip at all.
+        // With inlining the compare is an ordinary instruction of the caller, and
+        // as CR0 is dead at the caller's return (GuestEabiVisibility narrows what
+        // a return publishes to cr2-cr4) the branch evaluates it directly, with
+        // no context round trip and no packed CR at all, not even loaded at entry.
         Assert.Contains(
-            "SetCRResident(cr, xer, 0, static_cast<int32_t>(r4), static_cast<int32_t>(0));",
+            "if ((static_cast<int32_t>(r4) != static_cast<int32_t>(0))) {",
             inlined.CxxCode, StringComparison.Ordinal);
-        Assert.Equal(1, CountOccurrences(inlined.CxxCode, "cr = ctx->cr;"));
+        Assert.DoesNotContain("SetCRResident(", inlined.CxxCode, StringComparison.Ordinal);
+        Assert.DoesNotContain("cr = ctx->cr;", inlined.CxxCode, StringComparison.Ordinal);
     }
 
     [Fact]
