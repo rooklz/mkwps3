@@ -39,7 +39,8 @@ SPU_CC       := $(PS3DEV)/spu/bin/spu-gcc
 SPU_CFLAGS   := -O2 -mdual-nops -fmodulo-sched -ffunction-sections -fdata-sections \
                 -I$(REPO)/renderer -I$(PS3DEV)/spu/include -w
 # Translated code: the arena base pinned in r14.
-CXXFLAGS_GEN := -std=gnu++17 $(ARCH) $(OPT) -DMKW_PIN_ARENA -DNDEBUG \
+# EXTRA_GEN_FLAGS: e.g. -DMKW_COUNT_INSNS=1 for a measurement build (with its own OUT=).
+CXXFLAGS_GEN := -std=gnu++17 $(ARCH) $(OPT) -DMKW_PIN_ARENA -DNDEBUG $(EXTRA_GEN_FLAGS) \
                 -I$(REPO)/platform/ps3/compat -include mkw_ps3_compat.h \
                 -I$(REPO)/runtime/include -I$(WS)/generated -w
 

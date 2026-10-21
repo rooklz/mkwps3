@@ -345,6 +345,13 @@ public sealed partial class CxxLinearCodeGenerator
                 body.AppendLine($"    goto {labelNames[func.EntryLabel]};");
                 body.AppendLine();
 
+                // Guest instructions per block, for MKW_GUEST_INSNS (a no-op unless the runtime is
+                // built to count): the distance to the next block, or the IR length for the last.
+                var blockAddresses = func.Blocks
+                    .Select(static item => TryParseLocLabelAddress(item.Label, out var address) ? address : 0u)
+                    .Where(static address => address != 0)
+                    .OrderBy(static address => address)
+                    .ToArray();
                 foreach (var block in func.Blocks)
                 {
                     var localConstants = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
@@ -352,6 +359,16 @@ public sealed partial class CxxLinearCodeGenerator
                     RecordEmittedLocalLabel(label);
                     body.AppendLine($"{label}:");
                     body.AppendLine("{");
+                    {
+                        var guestInstructions = block.Instructions.Count;
+                        if (TryParseLocLabelAddress(block.Label, out var blockAddress))
+                        {
+                            var next = Array.FindIndex(blockAddresses, address => address > blockAddress);
+                            if (next >= 0 && blockAddresses[next] - blockAddress < 0x1000)
+                                guestInstructions = (int)((blockAddresses[next] - blockAddress) / 4);
+                        }
+                        body.AppendLine($"    MKW_GUEST_INSNS({guestInstructions});");
+                    }
                     var localPaired = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
                     if (pairedIn.TryGetValue(block.Label, out var pairedAtEntry))
                     {
@@ -706,6 +723,14 @@ public sealed partial class CxxLinearCodeGenerator
             emittedLocalLabelAddresses.ToArray(),
             stateFreeFacts,
             stateFreeVariantFacts);
+    }
+
+    private static bool TryParseLocLabelAddress(string label, out uint address)
+    {
+        address = 0;
+        return label.StartsWith("loc_", StringComparison.OrdinalIgnoreCase) &&
+               uint.TryParse(label.AsSpan(4), System.Globalization.NumberStyles.HexNumber,
+                   System.Globalization.CultureInfo.InvariantCulture, out address);
     }
 
     private static string EscapeCxxStringLiteral(string value) =>

@@ -47,6 +47,8 @@ namespace {
 
 extern volatile uint32_t* g_guestExecAddr;
 extern volatile uint32_t* g_guestEntries;
+extern volatile uint64_t* g_guestInstructions;
+extern "C" void mkw_mix_ticks(uint64_t* work, uint64_t* join, uint64_t* voices);
 std::atomic<bool> g_fatalReported{false};
 std::atomic<int> g_exitCode{0};
 std::atomic<bool> g_guestDone{false};
@@ -80,6 +82,7 @@ void GuestMain(void*)
     mkw_rescue_register_thread(0);
     g_guestExecAddr = &RecompMod::g_currentTranslatedExecutionAddress;
     g_guestEntries = &RecompMod::g_translatedEntries;
+    g_guestInstructions = &RecompMod::g_guestInstructions;
     try {
         SystemBridge::Initialize();
         TranslatedFunctionRegistry::Finalize();
@@ -143,6 +146,13 @@ void ReportStats()
         static uint32_t lastEntries = 0;
         const uint32_t entries = g_guestEntries ? *g_guestEntries : 0;
         const unsigned long long nf = frames - lastFrames;
+        // Zero unless the translated code counts guest instructions (MKW_COUNT_INSNS).
+        static uint64_t lastInstructions = 0;
+        const uint64_t instructions = g_guestInstructions ? *g_guestInstructions : 0;
+        if (instructions != lastInstructions && frames != lastFrames)
+            std::printf("insns %llu/frame; ", static_cast<unsigned long long>(
+                (instructions - lastInstructions) / (frames - lastFrames)));
+        lastInstructions = instructions;
         // Zero unless the translated code counts entries (MKW_COUNT_CALLS).
         if (entries != lastEntries) {
             std::printf("calls %llu/frame; ", nf ? static_cast<unsigned long long>(entries - lastEntries) / nf : 0ull);
@@ -151,6 +161,23 @@ void ReportStats()
         lastEntries = entries;
     }
     lastFrames = frames;
+    {
+        // AX mix time (on whichever thread mixes), the guest thread's waits for a mix
+        // worker, and voices mixed, per frame.
+        static uint64_t lastWork = 0, lastJoin = 0, lastVoices = 0;
+        static unsigned long long lastMixFrames = 0;
+        uint64_t work = 0, join = 0, voices = 0;
+        mkw_mix_ticks(&work, &join, &voices);
+        if (frames != lastMixFrames) {
+            const double n = static_cast<double>(frames - lastMixFrames);
+            std::printf("mix %.2f ms (wait %.2f), %.0f voices/frame; ", static_cast<double>(work - lastWork) / 79800.0 / n,
+                        static_cast<double>(join - lastJoin) / 79800.0 / n, static_cast<double>(voices - lastVoices) / n);
+        }
+        lastWork = work;
+        lastJoin = join;
+        lastVoices = voices;
+        lastMixFrames = frames;
+    }
     {
         uint64_t freeBytes = 0, totalBytes = 0;
         mkw_lv2_memory(&freeBytes, &totalBytes);
@@ -182,6 +209,7 @@ void ReportStats()
 namespace {
 volatile uint32_t* g_guestExecAddr = nullptr;
 volatile uint32_t* g_guestEntries = nullptr;
+volatile uint64_t* g_guestInstructions = nullptr;
 }
 
 extern "C" int mkw_guest_sample(uint32_t* func, uint32_t* lr, uint32_t* sp)

@@ -39,6 +39,14 @@ inline thread_local uint32_t g_translatedEntries = 0;
 #else
 #define MKW_FN_ENTER(address) MKW_FN_MARK(address)
 #endif
+// Guest instructions executed, block by block, when built with MKW_COUNT_INSNS: a measurement
+// build only (the counter's load and store slow every block), for cycles per guest instruction.
+inline thread_local uint64_t g_guestInstructions = 0;
+#if defined(MKW_COUNT_INSNS) && MKW_COUNT_INSNS
+#define MKW_GUEST_INSNS(n) (::RecompMod::g_guestInstructions += (n))
+#else
+#define MKW_GUEST_INSNS(n) ((void)0)
+#endif
 
 class ScopedTranslatedExecutionAddress {
 public:
