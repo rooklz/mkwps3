@@ -477,7 +477,7 @@ public class CodeGenTests
         Assert.Contains("GX_HLE_FIFO_Write16(static_cast<uint16_t>(ctx->gpr[4]));", code, StringComparison.Ordinal);
         Assert.Contains("GX_HLE_FIFO_Write32(static_cast<uint32_t>(ctx->gpr[7]));", code, StringComparison.Ordinal);
         Assert.Contains("GX_HLE_FIFO_WriteFloat(static_cast<float>(ctx->fpr[1].d));", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWrite8((ctx->gpr[6] + -32768), static_cast<uint32_t>(ctx->gpr[3]));", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWrite8(ctx->gpr[6], -32768, static_cast<uint32_t>(ctx->gpr[3]));", code, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -512,9 +512,9 @@ public class CodeGenTests
         var code = new CxxLinearCodeGenerator().Emit(0x8000801C, ssa, signature, types);
 
         Assert.Contains("fctiwzword0 = PPC_FprLowWordInline(ctx->fpr[0].d);", code, StringComparison.Ordinal);
-        Assert.DoesNotContain("MemoryInline::FlatWriteFloat64((ctx->gpr[1] + -16), ctx->fpr[0].d);", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("MemoryInline::FlatWriteFloat64(ctx->gpr[1], -16, ctx->fpr[0].d);", code, StringComparison.Ordinal);
         Assert.Contains("ctx->gpr[3] = fctiwzword0;", code, StringComparison.Ordinal);
-        Assert.DoesNotContain("ctx->gpr[3] = MemoryInline::FlatRead32((ctx->gpr[1] + -12));", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("ctx->gpr[3] = MemoryInline::FlatRead32(ctx->gpr[1], -12);", code, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -550,7 +550,7 @@ public class CodeGenTests
         var code = new CxxLinearCodeGenerator().Emit(0x8000801E, ssa, signature, types);
 
         Assert.Contains("fctiwzword0 = PPC_FprLowWordInline(ctx->fpr[0].d);", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWriteFloat64((ctx->gpr[1] + -16), ctx->fpr[0].d);", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteFloat64(ctx->gpr[1], -16, ctx->fpr[0].d);", code, StringComparison.Ordinal);
         Assert.Contains("ctx->gpr[3] = fctiwzword0;", code, StringComparison.Ordinal);
     }
 
@@ -588,7 +588,7 @@ public class CodeGenTests
         var code = new CxxLinearCodeGenerator().Emit(0x8000801D, ssa, signature, types);
 
         Assert.DoesNotContain("PPC_FprLowWordInline", code, StringComparison.Ordinal);
-        Assert.Contains("ctx->gpr[3] = MemoryInline::FlatRead32((ctx->gpr[1] + -12));", code, StringComparison.Ordinal);
+        Assert.Contains("ctx->gpr[3] = MemoryInline::FlatRead32(ctx->gpr[1], -12);", code, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -622,8 +622,8 @@ public class CodeGenTests
         var code = new CxxLinearCodeGenerator().Emit(0x80008020, ssa, signature, types);
 
         Assert.DoesNotContain("InvokeDirectCpu<0x80021504u>(ctx);", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWriteFloat64((ctx->gpr[11] + -48), ctx->fpr[26].d);", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWriteFloat64((ctx->gpr[11] + -8), ctx->fpr[31].d);", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteFloat64(ctx->gpr[11], -48, ctx->fpr[26].d);", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteFloat64(ctx->gpr[11], -8, ctx->fpr[31].d);", code, StringComparison.Ordinal);
         Assert.DoesNotContain("DebugTrackPcIfLightweight", code, StringComparison.Ordinal);
         Assert.Contains("// RECOMP_REGISTRATION base 0x80008020 save_fpr_midrange_thunk preserves=true fpr_mask=0x00000000", code, StringComparison.Ordinal);
     }
@@ -659,8 +659,8 @@ public class CodeGenTests
         var code = new CxxLinearCodeGenerator().Emit(0x80008024, ssa, signature, types);
 
         Assert.DoesNotContain("InvokeDirectCpu<0x80021550u>(ctx);", code, StringComparison.Ordinal);
-        Assert.Contains("ctx->fpr[26].d = MemoryInline::FlatReadFloat64((ctx->gpr[11] + -48));", code, StringComparison.Ordinal);
-        Assert.Contains("ctx->fpr[31].d = MemoryInline::FlatReadFloat64((ctx->gpr[11] + -8));", code, StringComparison.Ordinal);
+        Assert.Contains("ctx->fpr[26].d = MemoryInline::FlatReadFloat64(ctx->gpr[11], -48);", code, StringComparison.Ordinal);
+        Assert.Contains("ctx->fpr[31].d = MemoryInline::FlatReadFloat64(ctx->gpr[11], -8);", code, StringComparison.Ordinal);
         Assert.DoesNotContain("DebugTrackPcIfLightweight", code, StringComparison.Ordinal);
         Assert.Contains("// RECOMP_REGISTRATION base 0x80008024 rest_fpr_midrange_thunk preserves=false fpr_mask=0xFC000000", code, StringComparison.Ordinal);
     }
@@ -1164,7 +1164,7 @@ public class CodeGenTests
         Assert.Contains("double cached_f1 = 0.0;", code, StringComparison.Ordinal);
         Assert.Contains("cached_r3 = (cached_r3 + cached_r4);", code, StringComparison.Ordinal);
         Assert.Contains("cached_f1 = PPC_PsMulInline(PPC_PsFromScalarInline(cached_f2), PPC_PsFromScalarInline(cached_f3));", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWriteFloat64((cached_r3 + 4), cached_f1);", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteFloat64(cached_r3, 4, cached_f1);", code, StringComparison.Ordinal);
         Assert.DoesNotContain("ctx->gpr[4] = cached_r4;", code, StringComparison.Ordinal);
 
         var flushIndex = code.IndexOf("ctx->gpr[3] = cached_r3;", StringComparison.Ordinal);
@@ -1248,8 +1248,8 @@ public class CodeGenTests
             signature,
             types);
 
-        Assert.Contains("MemoryInline::FlatWriteRamFloat64((cached_r1 + 40), cached_f31);", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatReadFloat64((cached_r1 + 40))", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteRamFloat64(cached_r1, 40, cached_f31);", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatReadFloat64(cached_r1, 40)", code, StringComparison.Ordinal);
         Assert.DoesNotContain("leaf_stack_saved_f31_entry", code, StringComparison.Ordinal);
     }
 
@@ -1294,7 +1294,7 @@ public class CodeGenTests
         Assert.Contains("InvokeDirectCpu<0x80001234u>(ctx);", code, StringComparison.Ordinal);
         Assert.Contains("PPC_PsqStInline<0u, 0u>", code, StringComparison.Ordinal);
         Assert.DoesNotContain("PPC_PsqLInline<0u, 0u>", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatReadFloat64((cached_r1 + 112))", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatReadFloat64(cached_r1, 112)", code, StringComparison.Ordinal);
         Assert.Contains("tmp_psq_store", code, StringComparison.Ordinal);
         Assert.DoesNotContain("tmp_psq_load", code, StringComparison.Ordinal);
         Assert.DoesNotContain("leaf_stack_saved_f31_entry", code, StringComparison.Ordinal);
@@ -1340,8 +1340,8 @@ public class CodeGenTests
             types);
 
         Assert.Contains("PPC_PsqLInline<0u, 0u>", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWriteFloat64((cached_r1 + 40), cached_f31);", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatReadFloat64((cached_r1 + 112))", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteFloat64(cached_r1, 40, cached_f31);", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatReadFloat64(cached_r1, 112)", code, StringComparison.Ordinal);
         Assert.DoesNotContain("leaf_stack_saved_f31_entry", code, StringComparison.Ordinal);
     }
 
@@ -1385,8 +1385,8 @@ public class CodeGenTests
             types);
 
         Assert.DoesNotContain("PPC_PsqLInline<0u, 0u>", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatReadFloat32((cached_r1 + 116))", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatReadFloat64((cached_r1 + 112))", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatReadFloat32(cached_r1, 116)", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatReadFloat64(cached_r1, 112)", code, StringComparison.Ordinal);
         Assert.DoesNotContain("leaf_stack_saved_f31_entry", code, StringComparison.Ordinal);
     }
 

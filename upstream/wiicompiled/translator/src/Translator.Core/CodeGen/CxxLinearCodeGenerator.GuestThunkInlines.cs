@@ -81,11 +81,11 @@ public sealed partial class CxxLinearCodeGenerator
             if (isStore)
             {
                 var storedValue = isFloat ? value : $"static_cast<uint32_t>({value})";
-                sb.AppendLine($"{pad}{GuestStoreHelper(helperSize, isFloat)}(({frameBase} + {offset}), {storedValue});");
+                sb.AppendLine($"{pad}{GuestStoreHelper(helperSize, isFloat)}({FlatAddressArguments(frameBase, offset)}, {storedValue});");
             }
             else
             {
-                sb.AppendLine($"{pad}{value} = {GuestLoadHelper(helperSize, isFloat)}(({frameBase} + {offset}));");
+                sb.AppendLine($"{pad}{value} = {GuestLoadHelper(helperSize, isFloat)}({FlatAddressArguments(frameBase, offset)});");
             }
         }
     }

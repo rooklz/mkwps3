@@ -75,7 +75,7 @@ public class FunctionTranslatorCoverageTests
             });
 
         var callIndex = result.CxxCode.IndexOf("InvokeDirectCpu<0x80002000u>(ctx);", StringComparison.Ordinal);
-        var fallthroughIndex = result.CxxCode.IndexOf("MemoryInline::FlatRead32((r3 + 72))", StringComparison.Ordinal);
+        var fallthroughIndex = result.CxxCode.IndexOf("MemoryInline::FlatRead32(r3, 72)", StringComparison.Ordinal);
 
         Assert.True(callIndex >= 0, result.CxxCode);
         Assert.True(fallthroughIndex > callIndex);
@@ -138,11 +138,11 @@ public class FunctionTranslatorCoverageTests
 
         // Stores still distinguish the stack fast path (FlatWriteRam skips the MMIO policy check)
         // from the general guarded write (FlatWrite); reads have no such distinction, both spell FlatRead.
-        Assert.Contains("MemoryInline::FlatWriteRam32((r11 + -28)", result.CxxCode,
+        Assert.Contains("MemoryInline::FlatWriteRam32(r11, -28", result.CxxCode,
             StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatRead32((r11 + -28)", result.CxxCode,
+        Assert.Contains("MemoryInline::FlatRead32(r11, -28", result.CxxCode,
             StringComparison.Ordinal);
-        Assert.DoesNotContain("MemoryInline::FlatWrite32((r11 + -28)", result.CxxCode,
+        Assert.DoesNotContain("MemoryInline::FlatWrite32(r11, -28", result.CxxCode,
             StringComparison.Ordinal);
     }
 
@@ -167,9 +167,9 @@ public class FunctionTranslatorCoverageTests
             StringComparison.Ordinal);
         Assert.Contains("MemoryInline::ResolveRangeHost((r11 + -28), 0, 28u, true, false)", result.CxxCode,
             StringComparison.Ordinal);
-        Assert.DoesNotContain("MemoryInline::FlatWrite32((r11 + -28)", result.CxxCode,
+        Assert.DoesNotContain("MemoryInline::FlatWrite32(r11, -28", result.CxxCode,
             StringComparison.Ordinal);
-        Assert.DoesNotContain("MemoryInline::FlatRead32((r11 + -28)", result.CxxCode,
+        Assert.DoesNotContain("MemoryInline::FlatRead32(r11, -28", result.CxxCode,
             StringComparison.Ordinal);
     }
 
@@ -186,9 +186,9 @@ public class FunctionTranslatorCoverageTests
             entry,
             TranslationOptions.Default with { MaxBytes = 0xC });
 
-        Assert.Contains("MemoryInline::FlatWrite32((r11 + -28)", result.CxxCode,
+        Assert.Contains("MemoryInline::FlatWrite32(r11, -28", result.CxxCode,
             StringComparison.Ordinal);
-        Assert.DoesNotContain("MemoryInline::FlatWriteRam32((r11 + -28)", result.CxxCode,
+        Assert.DoesNotContain("MemoryInline::FlatWriteRam32(r11, -28", result.CxxCode,
             StringComparison.Ordinal);
     }
 

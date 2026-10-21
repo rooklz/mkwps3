@@ -45,8 +45,8 @@ public sealed class LocalCodeGenOptimizationTests
 
         Assert.Contains("PPC_FprLowWordInline(f0.d)", code, StringComparison.Ordinal);
         Assert.Contains("r3 = fctiwzword0;", code, StringComparison.Ordinal);
-        Assert.DoesNotContain("MemoryInline::FlatWriteFloat64((r1 + -16)", code, StringComparison.Ordinal);
-        Assert.DoesNotContain("MemoryInline::FlatRead32((r1 + -12))", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("MemoryInline::FlatWriteFloat64(r1, -16", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("MemoryInline::FlatRead32(r1, -12)", code, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public sealed class LocalCodeGenOptimizationTests
         var code = Emit(function, FctiwTypes(), 0x80008018);
 
         Assert.Contains("PPC_FprLowWordInline(f0.d)", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWriteRamFloat64((r1 + -16)", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteRamFloat64(r1, -16", code, StringComparison.Ordinal);
         Assert.Contains("InvokeDirectCpu<0x80001234u>(ctx);", code, StringComparison.Ordinal);
     }
 
@@ -68,7 +68,7 @@ public sealed class LocalCodeGenOptimizationTests
 
         Assert.DoesNotContain("PPC_PsqL", code, StringComparison.Ordinal);
         Assert.DoesNotContain("tmp_psq_load", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatReadFloat64((r1 + 112))", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatReadFloat64(r1, 112)", code, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public sealed class LocalCodeGenOptimizationTests
         var code = Emit(function, PairedRestoreTypes(), 0x80008020);
 
         Assert.Contains("PPC_PsqLStackInline<0u, 0u>", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWriteRamFloat64((r1 + 40), f31.d)", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteRamFloat64(r1, 40, f31.d)", code, StringComparison.Ordinal);
     }
 
     private static IrFunction FctiwFunction(bool includeGuestCallAfterLoad)

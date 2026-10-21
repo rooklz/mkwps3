@@ -563,7 +563,7 @@ public class ResidentAbiCodeGenTests
 
         // The save stays (anything walking the frame still sees it), but the epilogue reload
         // becomes the entry value: a store-then-load of the same word stalls the Cell PPE.
-        Assert.Contains("FlatWriteRam32((r1 + 12), r31)", code, StringComparison.Ordinal);
+        Assert.Contains("FlatWriteRam32(r1, 12, r31)", code, StringComparison.Ordinal);
         Assert.Contains("r31 = 7", code, StringComparison.Ordinal);
         Assert.Contains("r31 = stack_saved_r31_entry;", code, StringComparison.Ordinal);
         Assert.DoesNotContain("FlatRead32", code, StringComparison.Ordinal);

@@ -118,8 +118,8 @@ public class EmittedOutputShapeTests
         var code = Emit(function, UInt32Registers("r3", "r4"));
 
         Assert.Contains("MemoryInline::FlatWrite8(r4, static_cast<uint8_t>(r3));", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWrite16((r4 + 4), static_cast<uint16_t>(r3));", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWrite32((r4 + 8), r3);", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWrite16(r4, 4, static_cast<uint16_t>(r3));", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWrite32(r4, 8, r3);", code, StringComparison.Ordinal);
         Assert.DoesNotContain("static_cast<uint32_t>(r3)", code, StringComparison.Ordinal);
     }
 
@@ -149,8 +149,31 @@ public class EmittedOutputShapeTests
         var code = Emit(function, types);
 
         Assert.Contains("MemoryInline::FlatWriteFloat32(r4, f1.d);", code, StringComparison.Ordinal);
-        Assert.Contains("MemoryInline::FlatWriteFloat64((r4 + 8), f2.d);", code, StringComparison.Ordinal);
-        Assert.Contains("f3.d = MemoryInline::FlatReadFloat32((r4 + 16));", code, StringComparison.Ordinal);
-        Assert.Contains("f4.d = MemoryInline::FlatReadFloat64((r4 + 24));", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWriteFloat64(r4, 8, f2.d);", code, StringComparison.Ordinal);
+        Assert.Contains("f3.d = MemoryInline::FlatReadFloat32(r4, 16);", code, StringComparison.Ordinal);
+        Assert.Contains("f4.d = MemoryInline::FlatReadFloat64(r4, 24);", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AGuestDisplacementReachesTheAccessorApartFromItsBase()
+    {
+        var function = new IrFunction("displaced_accesses", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrLoad("r3", new IrAddress("r31", -32768), 4),
+                new IrLoad("r5", new IrAddress("r31", 32767), 2),
+                new IrStore(new IrAddress("r31", 0x10000), IrValue.Register("r3"), 4),
+                new IrReturn(null)
+            })
+        });
+
+        var code = Emit(function, UInt32Registers("r3", "r5", "r31"));
+
+        // A d-form field passes as is: the runtime folds the base alone and the host access carries
+        // the offset. One no load or store could encode keeps folding the effective address.
+        Assert.Contains("r3 = MemoryInline::FlatRead32(r31, -32768);", code, StringComparison.Ordinal);
+        Assert.Contains("r5 = MemoryInline::FlatRead16(r31, 32767);", code, StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatWrite32((r31 + 65536), r3);", code, StringComparison.Ordinal);
     }
 }
