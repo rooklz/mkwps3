@@ -9,8 +9,8 @@ cd "$(dirname "$0")/.."
 press() { tools/ps3-pad.sh a 4 >/dev/null; sleep "$1"; }
 racing() {
     tools/ps3-log.sh | grep "^\[stats\]" | tail -1 |
-        sed -n "s/.*busy \([0-9]*\)%.* draws \([0-9]*\) verts.*/\1 \2/p" |
-        awk '{ exit !($1 >= 70 && $2 >= 800000) }'
+        sed -n "s/.*busy -\{0,1\}\([0-9]*\)%.* draws \([0-9]*\) verts.*/\1 \2/p" |
+        awk '{ ok = $1 >= 70 && $2 >= 800000 } END { exit !ok }'
 }
 printf relaunch | nc -w 3 "$PS3_IP" 4001 >/dev/null
 sleep 12

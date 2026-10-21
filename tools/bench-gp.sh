@@ -25,8 +25,8 @@ press 5; press 5; press 6; press 8; press 12; press 9; press 9; press 9; press 9
 # /dev_hdd0/tmp/mkwii-norender.txt in place.
 racing() {
     tools/ps3-log.sh | grep "^\[stats\]" | tail -1 |
-        sed -n "s/.*busy \([0-9]*\)%.* draws \([0-9]*\) verts.*/\1 \2/p" |
-        awk '{ exit !($1 >= 70 && $2 >= 800000) }'
+        sed -n "s/.*busy -\{0,1\}\([0-9]*\)%.* draws \([0-9]*\) verts.*/\1 \2/p" |
+        awk '{ ok = $1 >= 70 && $2 >= 800000 } END { exit !ok }'
 }
 i=0
 until racing; do
