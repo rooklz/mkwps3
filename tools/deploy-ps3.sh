@@ -7,7 +7,7 @@ set -e
 GEN=${GEN:?set GEN in tools/local.env}
 PS3=${PS3_IP:?set PS3_IP in tools/local.env}
 PORT=${PS3_FTP_PORT:-21}
-APP=${PS3_APP:-DOLPHIN01}
+APP=${PS3_APP:-MKWP00001}
 OUT=${PS3_OUT:-$GEN/build/ps3}
 DEST="ftp://$PS3:$PORT/dev_hdd0/game/$APP/USRDIR"
 # vtx_spu.elf is loaded from USRDIR at run time; a stale one looks like a hung SPU.

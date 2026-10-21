@@ -49,6 +49,7 @@ extern volatile uint32_t* g_guestExecAddr;
 extern volatile uint32_t* g_guestEntries;
 extern volatile uint64_t* g_guestInstructions;
 extern "C" void mkw_mix_ticks(uint64_t* work, uint64_t* join, uint64_t* voices);
+extern "C" void mkw_rescue_set_app_dir(const char* dir);
 std::atomic<bool> g_fatalReported{false};
 std::atomic<int> g_exitCode{0};
 std::atomic<bool> g_guestDone{false};
@@ -333,8 +334,10 @@ int main(int argc, char** argv)
     if (argc > 0 && argv[0]) {
         const std::string self(argv[0]);
         const size_t slash = self.rfind('/');
-        if (slash != std::string::npos)
+        if (slash != std::string::npos) {
             std::filesystem::current_path(self.substr(0, slash));
+            mkw_rescue_set_app_dir(self.substr(0, slash).c_str());
+        }
     }
     OpenLog();
     std::printf("[main] mkwii-ps3 starting in %s\n", std::filesystem::current_path().string().c_str());

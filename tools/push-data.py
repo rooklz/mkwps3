@@ -71,7 +71,7 @@ def main():
     src = sys.argv[1]
     e = env()
     host, port = e["PS3_IP"], int(e.get("PS3_FTP_PORT", "21"))
-    root = f"/dev_hdd0/game/{e.get('PS3_APP', 'DOLPHIN01')}/USRDIR/DATA"
+    root = f"/dev_hdd0/game/{e.get('PS3_APP', 'MKWP00001')}/USRDIR/DATA"
     ftp = connect(host, port)
     todo = []
     for top in ("sys", "files"):

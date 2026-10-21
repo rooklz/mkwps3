@@ -37,16 +37,17 @@ extern char g_faultReport[2048];
 namespace {
 
 constexpr int kPort = 4001;
-const char* const kSpawnTargets[2] = {
-    "/dev_hdd0/game/DOLPHIN01/USRDIR/RELOAD.SELF",
-    "/dev_hdd0/game/DOLPHIN01/USRDIR/EBOOT.BIN",
-};
+// The app's USRDIR, from main(): the relaunch targets live there, whatever the install folder.
+char g_appDir[256] = "/dev_hdd0/game/MKWP00001/USRDIR";
 
 void Spawn()
 {
-    const char* self = kSpawnTargets[1];
+    static char targets[2][300];
+    snprintf(targets[0], sizeof targets[0], "%s/RELOAD.SELF", g_appDir);
+    snprintf(targets[1], sizeof targets[1], "%s/EBOOT.BIN", g_appDir);
+    const char* self = targets[1];
     struct stat st;
-    for (const char* t : kSpawnTargets) {
+    for (const char* t : targets) {
         if (stat(t, &st) == 0) {
             self = t;
             break;
@@ -544,4 +545,15 @@ extern "C" void mkw_fault_handler_start(void)
 extern "C" const char* mkw_last_fault(void)
 {
     return g_faultReport;
+}
+
+extern "C" void mkw_rescue_set_app_dir(const char* dir)
+{
+    std::strncpy(g_appDir, dir, sizeof g_appDir - 1);
+    g_appDir[sizeof g_appDir - 1] = '\0';
+}
+
+extern "C" const char* mkw_app_dir(void)
+{
+    return g_appDir;
 }

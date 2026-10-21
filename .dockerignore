@@ -1,0 +1,12 @@
+.git
+.github
+out
+local
+tools/local.env
+**/bin
+**/obj
+**/.DS_Store
+*.iso
+*.wbfs
+*.rvz
+*.pkg

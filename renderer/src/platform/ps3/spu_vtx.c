@@ -22,6 +22,9 @@
 #include "../../video/rsx/spu_vtx_shared.h"
 #include "../../common/phase_prof.h"
 
+/* The app's USRDIR (platform/ps3/rescue_ps3.cpp), where vtx_spu.elf ships. */
+const char *mkw_app_dir(void);
+
 #define SPU_ARENA_BYTES (8u * 1024u * 1024u)
 #define RING_BYTES      (SPU_OFF_SLOTS + SPU_VTX_RING * sizeof(SpuVtxJobSlot))
 #define SPIN_LIMIT      20000000u
@@ -187,7 +190,8 @@ void spu_vtx_init(void)
     sysSpuInitialize(6, 0);
     {
         static u8 elf[96 * 1024];
-        FILE *ef = fopen("/dev_hdd0/game/DOLPHIN01/USRDIR/vtx_spu.elf", "rb");
+        char elfPath[300];
+        FILE *ef;
         size_t n;
         u32 thr;
         sysSpuThreadArgument arg;
@@ -197,6 +201,8 @@ void spu_vtx_init(void)
         static const char tname[] = "vtxdec";
         int rc;
 
+        snprintf(elfPath, sizeof elfPath, "%s/vtx_spu.elf", mkw_app_dir());
+        ef = fopen(elfPath, "rb");
         if (!ef) { LOG_WARN(LOG_CORE, "spu_vtx: elf open failed"); return; }
         n = fread(elf, 1, sizeof elf, ef);
         fclose(ef);

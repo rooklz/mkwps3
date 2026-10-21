@@ -14,7 +14,7 @@
 # idle with nothing queued), 1 when it needs recovering.
 . "$(dirname "$0")/local.env" 2>/dev/null || true
 PS3=${PS3_IP:?set PS3_IP in tools/local.env}
-APP=${PS3_APP:-DOLPHIN01}
+APP=${PS3_APP:-MKWP00001}
 
 ctl() { printf '%s' "$1" | nc -w "${2:-3}" "$PS3" 4001 2>/dev/null; }
 webman_up() { curl -s -m 4 -o /dev/null -w '%{http_code}' "http://$PS3/cpursx.ps3" 2>/dev/null | grep -q 200; }
