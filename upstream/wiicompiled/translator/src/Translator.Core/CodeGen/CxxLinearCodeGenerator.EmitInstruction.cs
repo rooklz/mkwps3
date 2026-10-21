@@ -445,6 +445,11 @@ public sealed partial class CxxLinearCodeGenerator
                 }
                 else
                 {
+                    if (TryEmitKnownGpuFifoPsqStore(call, sb, pad, types, localPaired, knownConstants))
+                    {
+                        break;
+                    }
+
                     // Try inline expansion first for performance
                     if (TryEmitInlinePpc(call, sb, pad, types, localPaired, stackFacts))
                     {
@@ -686,6 +691,45 @@ public sealed partial class CxxLinearCodeGenerator
             _ => throw new InvalidOperationException($"Unexpected GPU FIFO width {fifoStore.ByteLength}.")
         };
         sb.AppendLine($"{pad}{helper}(static_cast<uint{fifoStore.ByteLength * 8}_t>({srcExpr}));");
+        return true;
+    }
+
+    /// <summary>
+    /// A paired-single store through GQR0 to the gather pipe (GXLoadTexMtxImm and friends write
+    /// matrices this way): GQR0 is an unscaled float (GQR0 is the compiler's, set to 0 in __PSInit
+    /// and never changed), so it is one float into the FIFO per lane, ps0 then ps1 for a pair --
+    /// what a known stfs to the pipe already becomes. Without this each store took the MMIO
+    /// path of the generic paired-single store.
+    /// </summary>
+    private static bool TryEmitKnownGpuFifoPsqStore(
+        IrCall call,
+        StringBuilder sb,
+        string pad,
+        RepresentationEnvironment types,
+        Dictionary<string, bool> localPaired,
+        IReadOnlyDictionary<string, uint> knownConstants)
+    {
+        if (!call.Target.Equals("PPC_PsqSt", StringComparison.OrdinalIgnoreCase) ||
+            call.Arguments.Count < 4 ||
+            call.Arguments[0] is not { Kind: "register", RegisterName: { } baseRegister } ||
+            call.Arguments[2] is not { Kind: "const", Constant: { } w } ||
+            call.Arguments[3] is not { Kind: "const", Constant: 0 } ||
+            w is not (0 or 1) ||
+            !TryGetKnownEffectiveAddress(new IrAddress(baseRegister, 0), knownConstants, out var address) ||
+            !IsGpuFifoAddress(address))
+        {
+            return false;
+        }
+
+        var value = ToPairedFloatExpression(call.Arguments[1], types, localPaired);
+        sb.AppendLine($"{pad}{{");
+        sb.AppendLine($"{pad}    const FprVal fifoPair = {value};");
+        sb.AppendLine($"{pad}    GX_HLE_FIFO_WriteFloat(static_cast<float>(fifoPair.ps0));");
+        if (w == 0)
+        {
+            sb.AppendLine($"{pad}    GX_HLE_FIFO_WriteFloat(static_cast<float>(fifoPair.ps1));");
+        }
+        sb.AppendLine($"{pad}}}");
         return true;
     }
 

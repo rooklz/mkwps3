@@ -42,6 +42,37 @@ public class GpuFifoBurstCodeGenTests
         ]);
 
     [Fact]
+    public void PairedSingleStoresThroughGqr0GoStraightIntoThePipe()
+    {
+        // GXLoadTexMtxImm's psq_st f5,0(r4) / psq_st f0,0(r4),1,0 with r4 = 0xCC008000.
+        var code = Emit(Function("psq_into_pipe",
+            new IrBinary("r4", IrValue.Register("r10"), IrValue.Imm(GatherPipeDisplacement), "add"),
+            new IrCall(string.Empty, "PPC_PsqSt",
+                new[] { IrValue.Register("r4"), IrValue.Register("f5"), IrValue.Imm(0), IrValue.Imm(0) }),
+            new IrCall(string.Empty, "PPC_PsqSt",
+                new[] { IrValue.Register("r4"), IrValue.Register("f0"), IrValue.Imm(1), IrValue.Imm(0) }),
+            new IrReturn(null)));
+
+        Assert.Equal(2, CountOccurrences(code, "GX_HLE_FIFO_WriteFloat(static_cast<float>(fifoPair.ps0));"));
+        Assert.Equal(1, CountOccurrences(code, "GX_HLE_FIFO_WriteFloat(static_cast<float>(fifoPair.ps1));"));
+        Assert.DoesNotContain("PPC_PsqSt", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void APairedSingleStoreThroughAnotherGqrKeepsTheGenericPath()
+    {
+        // GQR2-7 can scale or quantize, so only GQR0 is known to be a plain float.
+        var code = Emit(Function("psq_quantized_pipe",
+            new IrBinary("r4", IrValue.Register("r10"), IrValue.Imm(GatherPipeDisplacement), "add"),
+            new IrCall(string.Empty, "PPC_PsqSt",
+                new[] { IrValue.Register("r4"), IrValue.Register("f5"), IrValue.Imm(0), IrValue.Imm(3) }),
+            new IrReturn(null)));
+
+        Assert.DoesNotContain("fifoPair", code, StringComparison.Ordinal);
+        Assert.Contains("PPC_PsqSt", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ThirteenMixedWidthStoresBecomeOneBurstWithBigEndianLayout()
     {
         // Alternating byte/word fields, the shape a GD command header plus its
