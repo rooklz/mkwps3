@@ -1,4 +1,5 @@
 #pragma once
+#include "ppc_isa_cr.h"
 #include "ppc_isa_fpenv.h"
 
 #include <cmath>
@@ -178,15 +179,8 @@ inline void SetCR(CpuContext* cpu, int field, uint32_t a, uint32_t b) {
 
 // Helper to set CR bits (Floating-point)
 inline void SetCRFloat(CpuContext* cpu, int field, double a, double b) {
-    uint32_t crField = 0;
-    if (std::isnan(a) || std::isnan(b)) {
-        // Unordered: LT/GT/EQ clear, SO set.
-        crField = 0x1;
-    } else {
-        if (a < b) crField |= 0x8; // LT
-        if (a > b) crField |= 0x4; // GT
-        if (a == b) crField |= 0x2; // EQ
-    }
+    // Unordered: LT/GT/EQ clear, SO set.
+    const uint32_t crField = PpcFloatCompareField(a, b);
 
     int shift = (7 - field) * 4;
     uint32_t mask = 0xF << shift;
