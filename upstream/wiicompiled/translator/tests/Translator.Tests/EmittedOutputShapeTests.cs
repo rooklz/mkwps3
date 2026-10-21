@@ -176,4 +176,30 @@ public class EmittedOutputShapeTests
         Assert.Contains("r5 = MemoryInline::FlatRead16(r31, 32767);", code, StringComparison.Ordinal);
         Assert.Contains("MemoryInline::FlatWrite32((r31 + 65536), r3);", code, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void OnlyTheEntryAndTimeBaseReadsMarkTheRunningFunction()
+    {
+        // Marks after calls are for profiling builds (MKW_CALL_MARKS=1). A time base read still
+        // gets one: the fixed-seed hook in PPC_Mftb picks its callers by it.
+        var function = new IrFunction("func_80001000", "loc_80001000", new[]
+        {
+            new IrBasicBlock("loc_80001000", new IrInstruction[]
+            {
+                new IrAssign("lr", IrValue.Imm(0x80001008)),
+                new IrCall(string.Empty, "0x80002000", System.Array.Empty<IrValue>()),
+                new IrCall("r3", "PPC_Mftb", System.Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+
+        var code = Emit(function, UInt32Registers("r3"));
+        var call = code.IndexOf("InvokeDirectCpu<0x80002000u>(ctx);", System.StringComparison.Ordinal);
+        var timeBase = code.IndexOf("PPC_Mftb(", System.StringComparison.Ordinal);
+
+        Assert.True(call > 0 && timeBase > call, code);
+        Assert.Contains("MKW_FN_ENTER(0x80001000u);", code[..call], System.StringComparison.Ordinal);
+        Assert.Contains("MKW_FN_MARK(0x80001000u);", code[call..timeBase], System.StringComparison.Ordinal);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(code, @"MKW_FN_MARK\("));
+    }
 }

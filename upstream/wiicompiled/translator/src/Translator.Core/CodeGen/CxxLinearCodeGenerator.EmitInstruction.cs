@@ -465,6 +465,12 @@ public sealed partial class CxxLinearCodeGenerator
                         break;
                     }
 
+                    if (call.Target is "PPC_Mftb" or "PPC_Mftbu")
+                    {
+                        // The fixed-seed hook picks the time base reads it answers by the mark.
+                        AppendTimeBaseMark(sb, pad);
+                    }
+
                     // Helper function call (e.g., PPC_Ps*, memory helpers)
                     var isPairedConsumer = IsPairedConsumerTarget(call.Target);
                     var isSingleConsumer = IsSinglePrecisionConsumerTarget(call.Target);
