@@ -577,9 +577,9 @@ static void apply_view_state(gcmContextData *c, const GXState *g)
     uy = (int)(fy * sy + (fy >= 0.0f ? 0.5f : -0.5f));
     uw = (int)(fw * sx + 0.5f);
     uh = (int)(fh * sy + 0.5f);
-    vx = clampi(ux, 0, (int)g_rsx.width);
+    vx = clampi(ux, 0, (int)rsx_efb_width());
     vy = clampi(uy, 0, (int)rsx_efb_height());
-    vw = clampi(ux + uw, 0, (int)g_rsx.width) - vx;
+    vw = clampi(ux + uw, 0, (int)rsx_efb_width()) - vx;
     vh = clampi(uy + uh, 0, (int)rsx_efb_height()) - vy;
     if (vw < 1) vw = 1;
     if (vh < 1) vh = 1;
@@ -593,10 +593,10 @@ static void apply_view_state(gcmContextData *c, const GXState *g)
         int r = bp->scissor_right  - bp->scissor_offset_x;
         int b = bp->scissor_bottom - bp->scissor_offset_y;
         if (r < l || b < t) { l = t = 0; r = b = -1; }
-        sx0 = clampi((int)((float)l * sx + 0.5f), 0, (int)g_rsx.width);
+        sx0 = clampi((int)((float)l * sx + 0.5f), 0, (int)rsx_efb_width());
         sy0 = clampi((int)((float)t * sy + 0.5f), 0, (int)rsx_efb_height());
         sw  = clampi((int)((float)(r - l + 1) * sx + 0.5f), 0,
-                     (int)g_rsx.width  - sx0);
+                     (int)rsx_efb_width() - sx0);
         sh  = clampi((int)((float)(b - t + 1) * sy + 0.5f), 0,
                      (int)rsx_efb_height() - sy0);
     }
@@ -803,7 +803,7 @@ static void efb_copy_resolve(const BPCopy *copy, u32 pe_control)
     src_h = (float)copy->height * sy;
     if (src_x < 0.0f) src_x = 0.0f;
     if (src_y < 0.0f) src_y = 0.0f;
-    if (src_x + src_w > (float)g_rsx.width)  src_w = (float)g_rsx.width  - src_x;
+    if (src_x + src_w > (float)rsx_efb_width()) src_w = (float)rsx_efb_width() - src_x;
     if (src_y + src_h > (float)rsx_efb_height()) src_h = (float)rsx_efb_height() - src_y;
     if (copy->src_y >= 456 || copy->src_y + copy->height > 456) {
         extern u64 g_draw_frame_base;
@@ -852,7 +852,7 @@ static void efb_copy_resolve(const BPCopy *copy, u32 pe_control)
     sc.outW  = (u16)sf->store_w; sc.outH  = (u16)sf->store_h;
     sc.ratioX = rsxGetFixedSint32(src_w / (float)sf->store_w);
     sc.ratioY = rsxGetFixedSint32(src_h / (float)sf->store_h);
-    sc.inW    = (u16)g_rsx.width;
+    sc.inW    = (u16)rsx_efb_width();
     sc.inH    = (u16)rsx_efb_height();
     sc.pitch  = (u16)g_rsx.pitch;
     sc.origin = GCM_TRANSFER_ORIGIN_CORNER;
@@ -1087,14 +1087,18 @@ static void efb_copy_clear(const BPCopy *copy, const GXState *g)
     if (!c || !g_rsx.inited)
         return;
 
+    /* Rounded the way the scissor is (apply_view_state), so a clear and a
+     * later draw into the same EFB rectangle cover the same pixels. Truncating
+     * here cleared one column and row more than Mario Kart's restore of the
+     * bloom scratch corner redraws, leaving a dark box edge on screen. */
     sx = efb_sx(); sy = efb_sy();
-    x = (int)((float)copy->src_x * sx);
-    y = (int)((float)copy->src_y * sy);
+    x = (int)((float)copy->src_x * sx + 0.5f);
+    y = (int)((float)copy->src_y * sy + 0.5f);
     w = (int)((float)copy->width  * sx + 0.5f);
     h = (int)((float)copy->height * sy + 0.5f);
     if (x < 0) x = 0;
     if (y < 0) y = 0;
-    if (x + w > (int)g_rsx.width)  w = (int)g_rsx.width  - x;
+    if (x + w > (int)rsx_efb_width()) w = (int)rsx_efb_width() - x;
     if (y + h > (int)rsx_efb_height()) h = (int)rsx_efb_height() - y;
     if (w <= 0 || h <= 0)
         return;
@@ -1139,12 +1143,19 @@ static void efb_copy_clear(const BPCopy *copy, const GXState *g)
         int z_on = g->bp.zmode.update_enable != 0;
         int c_on = g->bp.blend.color_update != 0;
         int a_on = g->bp.blend.alpha_update != 0 && pf == 1u;
-        if (!z_on && !c_on && !a_on)
+        if (!z_on && !c_on && !a_on) {
+            gx_view_state_dirty();
             return;
+        }
         if (!z_on) {
             if ((g_rsx.efb || y >= (int)g_rsx.height) && (c_on || a_on))
                 efb_clear_channels(c, x, y, w, h, c_on, a_on, pf,
                                    copy->clear_color);
+            /* The scissor is still the copy's rectangle. Mario Kart's bloom
+             * clears like this (Z updates off) between passes, and the
+             * combine pass straight after a 76x57 copy kept that scissor:
+             * a quarter of the bloom was right and the rest stayed white. */
+            gx_view_state_dirty();
             return;
         }
     }
@@ -2150,7 +2161,7 @@ void gx_render_frame_begin(void)
          * corner only, on every title frame the platform does not present (it
          * re-establishes the surface only on the frames it flips). Cheap, once
          * per title frame, and the per-draw cache is told the GPU moved. */
-        rsxSetScissor(c, 0, 0, (u16)g_rsx.width, (u16)rsx_efb_height());
+        rsxSetScissor(c, 0, 0, (u16)rsx_efb_width(), (u16)rsx_efb_height());
         gx_view_state_dirty();
         rsxSetClearDepthStencil(c, 0xffffff00u);
         rsxSetDepthWriteEnable(c, GCM_TRUE);   /* or the clear is a no-op */

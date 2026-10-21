@@ -587,7 +587,7 @@ int rsx_video_init(void)
      * a later change to the mask cannot leave the allocation and the tile
      * registers disagreeing. */
     int               want_tile = (g_gx_state_mask & GX_STATE_RSX_TILE) != 0;
-    u32               cb_h, cb_size, depth_h, depth_size;
+    u32               cb_h, cb_size, depth_h, depth_size, efb_w;
 
     if (g_rsx.inited)
         return 0;
@@ -737,8 +737,15 @@ ring_hook_done:;
      * disagreement is a distinct RSX graphics error rather than a soft
      * failure -- which is why this is the first line of the change and not an
      * afterthought once the surfaces are tiled. */
-    cfg.pitch      = want_tile ? gcmGetTiledPitchSize(res.width * 4)
-                               : res.width * 4;
+    /* The EFB is 640 columns wide and the title presents 608 of them, using
+     * the spare 32 (with rows 456..527) as scratch: Mario Kart Wii's bloom
+     * works in a 152x114 block at (488,414). The EFB surface shares this
+     * pitch, so the pitch covers all 640 columns at the display's scale. At
+     * 480p that changes nothing (720*4 already tiles as 3072); at 720p it
+     * takes the pitch from 5120 to 6144. */
+    efb_w          = align_up_u32((res.width * 640u + 607u) / 608u, 8u);
+    cfg.pitch      = want_tile ? gcmGetTiledPitchSize(efb_w * 4)
+                               : align_up_u32(efb_w * 4, 64u);
 
     g_rsx_init_step = "videoConfigure";
     rc = videoConfigure(0, &cfg, NULL, 0);
@@ -750,6 +757,7 @@ ring_hook_done:;
     g_rsx.width  = res.width;
     g_rsx.height = res.height;
     g_rsx.pitch  = cfg.pitch;
+    g_rsx.efb_width = efb_w;
 
     /* On NV4x colour pitch and depth pitch are separate registers, so the
      * depth buffer gets its own legal pitch rather than borrowing colour's.
@@ -757,8 +765,8 @@ ring_hook_done:;
      * come out equal -- but they are computed separately because nothing
      * guarantees that, and a depth pitch that is not on the legal list is a
      * silently untiled depth buffer. */
-    g_rsx.depth_pitch = want_tile ? gcmGetTiledPitchSize(g_rsx.width * 4)
-                                  : g_rsx.width * 4;
+    g_rsx.depth_pitch = want_tile ? gcmGetTiledPitchSize(efb_w * 4)
+                                  : align_up_u32(efb_w * 4, 64u);
 
     /* Buffer height rounds to 32 lines in local memory -- that is the height
      * of one 8 KiB frame-buffer tile -- and the whole region then rounds up to
@@ -866,7 +874,7 @@ ring_hook_done:;
 
     /* --- tile regions and Zcull ------------------------------------- */
     if (want_tile) {
-        u32 zc_w = align_up_u32(g_rsx.width,  GCM_ZCULL_ALIGN_WIDTH);
+        u32 zc_w = align_up_u32(g_rsx.efb_width, GCM_ZCULL_ALIGN_WIDTH);
         u32 zc_h = align_up_u32(rsx_efb_height(), GCM_ZCULL_ALIGN_HEIGHT);
 
         g_rsx_init_step = "tile wait idle";
@@ -1352,7 +1360,7 @@ void rsx_frame_begin(void)
     s.depthOffset   = g_rsx.depth_offset;
     s.depthPitch    = g_rsx.depth_pitch;
 
-    s.width  = (u16)g_rsx.width;
+    s.width  = (u16)rsx_efb_width();
     s.height = (u16)rsx_efb_height();
     s.x = s.y = 0;
 
@@ -1384,7 +1392,7 @@ void rsx_frame_begin(void)
         f32 scale[4], offset[4];
         f32 w = (f32)g_rsx.width, h = (f32)g_rsx.height;
 
-        rsxSetScissor(s_ctx, 0, 0, (u16)g_rsx.width, (u16)rsx_efb_height());
+        rsxSetScissor(s_ctx, 0, 0, (u16)rsx_efb_width(), (u16)rsx_efb_height());
         /* Smooth shading, explicitly. A flat shade model takes the whole
          * primitive's colour from one vertex, which renders a perfectly
          * uniform triangle -- indistinguishable from an interpolant that is
@@ -1403,7 +1411,7 @@ void rsx_frame_begin(void)
             unsigned cl;
             for (cl = 0; cl < 8; cl++)
                 rsxSetViewportClip(s_ctx, (u8)cl,
-                                   (u16)g_rsx.width, (u16)rsx_efb_height());
+                                   (u16)rsx_efb_width(), (u16)rsx_efb_height());
         }
         rsxSetUserClipPlaneControl(s_ctx,
                                    GCM_USER_CLIP_PLANE_DISABLE,

@@ -56,6 +56,7 @@ typedef struct {
      * bound, Zcull refused) is visible instead of assumed. */
     int  tiled;                 /* tile regions bound over every surface  */
     int  zcull;                 /* a Zcull region is bound over the depth */
+    u32  efb_width;             /* width of EFB & depth surfaces (>= width, covers 640 EFB columns) */
     u32  efb_height;            /* height of EFB & depth surfaces (>= height, covers 528 EFB rows) */
     u32  buffer_bytes;          /* per colour buffer, incl. the tile tail */
     u32  efb_bytes;
@@ -65,6 +66,11 @@ typedef struct {
 } RsxVideo;
 
 extern RsxVideo g_rsx;
+
+static inline u32 rsx_efb_width(void)
+{
+    return (g_rsx.efb && g_rsx.efb_width) ? g_rsx.efb_width : g_rsx.width;
+}
 
 static inline u32 rsx_efb_height(void)
 {
