@@ -736,6 +736,18 @@ extern "C" inline double PPC_Fsel(double control, double negative, double positi
     return (control >= -0.0) ? positive : negative;
 }
 
+// CodeWarrior's __cvt_fp2unsigned, which the translator runs inline: a double
+// to an unsigned word, rounding toward zero, with anything below zero giving 0
+// and anything from 2^32 up, NaN included, all ones.
+inline uint32_t PPC_CvtFp2UnsignedInline(double value)
+{
+    if (value < 0.0)
+        return 0u;
+    if (!(value < 4294967296.0))
+        return 0xFFFFFFFFu;
+    return static_cast<uint32_t>(value);
+}
+
 extern "C" inline double PPC_Fctiwz(double value)
 {
 #if defined(__PPC__) || defined(__powerpc__)

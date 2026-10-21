@@ -5,8 +5,9 @@ using Translator.Core.Loading;
 namespace Translator.Tests;
 
 /// <summary>
-/// Installs the MKWii PAL save/restore thunk address ranges once for the whole test assembly,
-/// since several suites translate hand-assembled fragments that call these thunks by address.
+/// Installs the MKWii PAL save/restore thunk address ranges, and the runtime helpers calls run
+/// inline, once for the whole test assembly, since several suites translate hand-assembled
+/// fragments that call these by address.
 /// </summary>
 internal static class GuestSaveRestoreThunkTestDefaults
 {
@@ -24,6 +25,9 @@ internal static class GuestSaveRestoreThunkTestDefaults
                 "800215b8 _rest_gpr_14",
                 "800215ec _rest_gpr_27"
             ],
+            "mkwii-pal-test-defaults"));
+        GuestRuntimeIntrinsics.Current = GuestRuntimeIntrinsics.FromFunctionMap(FunctionMap.Parse(
+            ["80021478 __cvt_fp2unsigned"],
             "mkwii-pal-test-defaults"));
     }
 }

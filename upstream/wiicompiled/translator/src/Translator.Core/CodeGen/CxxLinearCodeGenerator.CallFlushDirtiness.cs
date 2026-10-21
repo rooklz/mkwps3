@@ -75,6 +75,14 @@ public sealed partial class CxxLinearCodeGenerator
                 for (var index = 0; index < block.Instructions.Count; ++index)
                 {
                     var instruction = block.Instructions[index];
+                    if (instruction is IrCall inlined && TryParseAddress(inlined.Target, out var inlinedTarget) &&
+                        IsGuestRuntimeIntrinsic(inlinedTarget))
+                    {
+                        // Runs inline: it publishes nothing and only writes r3.
+                        gpr |= 1u << 3;
+                        continue;
+                    }
+
                     if (instruction is IrCall call && TryParseAddress(call.Target, out var target))
                     {
                         // A state-free entry takes its inputs by value and hands its results to

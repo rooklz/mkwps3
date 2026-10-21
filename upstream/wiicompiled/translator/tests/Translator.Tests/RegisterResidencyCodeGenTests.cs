@@ -350,6 +350,40 @@ public class RegisterResidencyCodeGenTests
     }
 
     [Fact]
+    public void AnInlinedRuntimeHelperLeavesTheNextCallItsFlushes()
+    {
+        // __cvt_fp2unsigned runs inline on f1 into r3 and publishes nothing, so the f1 it was
+        // handed is still only in its local when the next call, which reads f1, comes along.
+        var function = new IrFunction("cvt_then_call", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrAssign("f1", IrValue.Register("f2")),
+                new IrAssign("lr", IrValue.Imm(0x80001010)),
+                new IrCall(string.Empty, "0x80021478", Array.Empty<IrValue>()),
+                new IrAssign("lr", IrValue.Imm(0x80001018)),
+                new IrCall(string.Empty, "0x80002000", Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+        var contracts = new Dictionary<uint, GuestAbiContract>
+        {
+            [0x80021478u] = NarrowContract(gprRead: 1u << 1, gprWrite: (1u << 3) | (1u << 4), fprRead: 0x1Eu),
+            [0x80002000u] = NarrowContract(gprRead: 1u << 3, fprRead: 1u << 1)
+        };
+
+        var body = FunctionBody(Emit(function, guestAbiContracts: contracts), "cvt_then_call");
+        var call = body.IndexOf("InvokeDirectCpu<0x80002000u>(ctx);", StringComparison.Ordinal);
+        Assert.True(call > 0);
+        var beforeCall = body[..call];
+
+        Assert.Contains("r3 = PPC_CvtFp2UnsignedInline(", beforeCall, StringComparison.Ordinal);
+        Assert.DoesNotContain("0x80021478u", body, StringComparison.Ordinal);
+        Assert.Contains("ctx->fpr[1] = f1;", beforeCall, StringComparison.Ordinal);
+        Assert.Contains("ctx->gpr[3] = r3;", beforeCall, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BoundaryNarrowingFlushesRegistersTheCalleeOnlyMayWrite()
     {
         // A register the callee may write has to be flushed even though the
