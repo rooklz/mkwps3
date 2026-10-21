@@ -69,6 +69,15 @@ public static class GuestEabiVisibility
     public static readonly bool NarrowsReturnFlags =
         Enabled && Environment.GetEnvironmentVariable("MKW_EABI_RETURN_FLAGS") != "0";
 
+    /// <summary>
+    /// What a linked call can pass an EABI body in the condition register: cr1 (the varargs float
+    /// flag) and the nonvolatile cr2-cr4. <c>MKW_EABI_CALL_FLAGS=0</c> takes callee contracts as they are.
+    /// </summary>
+    public const byte CallReadCr = 0x1E;
+
+    public static readonly bool NarrowsCallFlags =
+        Enabled && Environment.GetEnvironmentVariable("MKW_EABI_CALL_FLAGS") != "0";
+
     public const uint LocalGpr = 0xFFFFC000u;  // r14-r31
     public const uint LocalFpr = 0xFFFFC000u;  // f14-f31
 

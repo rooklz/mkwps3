@@ -362,6 +362,60 @@ public class FlagElisionCodeGenTests
     }
 
     [Fact]
+    public void ALinkedCallCannotKeepAVolatileFieldAlive()
+    {
+        // A bl into an EABI body can only hand it cr1-cr4; a contract showing a CR0
+        // read is an mfcr saving the nonvolatile fields, so the compare still fuses.
+        var function = new IrFunction("linked_call_after_branch", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrSetCrField(0, IrValue.Register("r3"), IrValue.Imm(0), false),
+                new IrBranch("beq", "taken", "fallthrough", "cr0")
+            }),
+            new IrBasicBlock("taken", new IrInstruction[]
+            {
+                new IrAssign("lr", IrValue.Imm(0x80001010)),
+                new IrCall(string.Empty, "0x80002000", Array.Empty<IrValue>()),
+                new IrSetCrField(0, IrValue.Register("r4"), IrValue.Imm(0), false),
+                new IrReturn(null)
+            }),
+            Cr0KillingExit("fallthrough", "r5")
+        });
+
+        var savesCr = new Dictionary<uint, GuestAbiContract> { [0x80002000u] = Contract(crRead: 0xFF) };
+        Assert.Contains(
+            "if ((static_cast<int32_t>(r3) == static_cast<int32_t>(0)))",
+            Emit(function, guestAbiContracts: savesCr), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ATailCallKeepsTheFieldsItsTargetReads()
+    {
+        // A branch to another body's entry may be a continuation running on this
+        // body's flags, so its whole read set stands.
+        var function = new IrFunction("tail_call_after_branch", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrSetCrField(0, IrValue.Register("r3"), IrValue.Imm(0), false),
+                new IrBranch("beq", "taken", "fallthrough", "cr0")
+            }),
+            new IrBasicBlock("taken", new IrInstruction[]
+            {
+                new IrCall(string.Empty, "0x80002000", Array.Empty<IrValue>()),
+                new IrReturn(null)
+            }),
+            Cr0KillingExit("fallthrough", "r5")
+        });
+
+        var readsCr0 = new Dictionary<uint, GuestAbiContract> { [0x80002000u] = Contract(crRead: 0x01) };
+        Assert.Contains(
+            "SetCRResident(cr, xer, 0, static_cast<int32_t>(r3)",
+            Emit(function, guestAbiContracts: readsCr0), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RecordFormWriteOverwrittenBeforeAnyReadIsRemoved()
     {
         // add. followed by cmpwi into the same field with no reader in between:

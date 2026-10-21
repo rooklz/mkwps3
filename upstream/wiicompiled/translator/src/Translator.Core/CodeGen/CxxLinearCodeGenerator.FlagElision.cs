@@ -135,7 +135,8 @@ public sealed partial class CxxLinearCodeGenerator
         var fused = new Dictionary<string, FusedCompare>(StringComparer.OrdinalIgnoreCase);
 
         {
-            var context = new GuestFlagLivenessContext(guestAbiContracts, modOverridableCallTargets);
+            var context = new GuestFlagLivenessContext(
+                guestAbiContracts, modOverridableCallTargets, GuestFlagLivenessContext.FindLinkedCalls(function));
             var liveness = GuestFlagLivenessAnalyzer.Analyze(function, cfg, context, exitLive);
             var fusedCompareSites = new HashSet<(string Block, int Index)>();
 

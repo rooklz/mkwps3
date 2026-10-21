@@ -359,7 +359,8 @@ public sealed partial class CxxLinearCodeGenerator
                     }
                     var boundarySync = usesStateFreeCall
                         ? ResidencyBoundarySync.Full
-                        : ResolveDirectCallBoundarySync(addr, guestAbiContracts, modOverridableCallTargets);
+                        : ResolveDirectCallBoundarySync(
+                            addr, guestAbiContracts, modOverridableCallTargets, linkedCall: localFallthroughLr.HasValue);
                     // A normalized argument is rewritten in CpuContext after the flush, so it has to be
                     // flushed first and its local refreshed after.
                     for (var fpr = 0; fpr < 32 && !boundarySync.IsFull; ++fpr)

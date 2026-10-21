@@ -38,13 +38,36 @@ public readonly record struct GuestFlagState(byte CrFields, bool Carry)
 /// What the flag liveness transfer needs at a call site. A target missing from
 /// <see cref="CalleeContracts"/>, or listed in <see cref="OpaqueCallTargets"/> (a mod may replace
 /// it, so the published contract may not match what actually runs), is a complete flag boundary.
+/// <see cref="LinkedCalls"/> are the calls a <c>bl</c> made (the call follows its <c>lr</c> load):
+/// only those are EABI calls; anything else -- a tail branch above all -- may be a continuation
+/// that runs on this body's flags.
 /// </summary>
 public sealed record GuestFlagLivenessContext(
     IReadOnlyDictionary<uint, GuestAbiContract> CalleeContracts,
-    IReadOnlySet<uint> OpaqueCallTargets)
+    IReadOnlySet<uint> OpaqueCallTargets,
+    IReadOnlySet<IrInstruction>? LinkedCalls = null)
 {
     public static GuestFlagLivenessContext Empty { get; } = new(
         new Dictionary<uint, GuestAbiContract>(), new HashSet<uint>());
+
+    /// <summary>The calls in <paramref name="function"/> made by <c>bl</c>.</summary>
+    public static IReadOnlySet<IrInstruction> FindLinkedCalls(IrFunction function)
+    {
+        var linked = new HashSet<IrInstruction>(ReferenceEqualityComparer.Instance);
+        foreach (var block in function.Blocks)
+        {
+            for (var index = 1; index < block.Instructions.Count; ++index)
+            {
+                if (block.Instructions[index] is IrCall call &&
+                    block.Instructions[index - 1] is IrAssign { Value.Kind: "const" } assign &&
+                    RegisterNameUtils.HardwareBase(assign.Destination).Equals("lr", StringComparison.OrdinalIgnoreCase))
+                {
+                    linked.Add(call);
+                }
+            }
+        }
+        return linked;
+    }
 }
 
 public sealed record GuestFlagLivenessResult(
@@ -195,9 +218,24 @@ public static class GuestFlagLivenessAnalyzer
                 return GuestFlagState.All;
             }
 
-            return contract.HasFullSynchronizationFence
-                ? GuestFlagState.All
-                : new GuestFlagState(contract.CrReadBeforeWriteMask, contract.ReadsXerBeforeWrite);
+            if (contract.HasFullSynchronizationFence)
+            {
+                return GuestFlagState.All;
+            }
+
+            // A linked call into an EABI body can only hand it CR fields 1-4: cr1 carries the
+            // varargs float flag, cr2-cr4 are the nonvolatile fields it saves and restores. Its
+            // contract shows more whenever it saves CR with mfcr, which reads all eight fields,
+            // and that read spreads to every caller up the graph -- left alone it kept half of
+            // all compares from being fused or dropped. The carry is volatile too.
+            if (GuestEabiVisibility.NarrowsCallFlags && GuestEabiVisibility.Applies(target) &&
+                context.LinkedCalls is { } linked && linked.Contains(call))
+            {
+                return new GuestFlagState(
+                    (byte)(contract.CrReadBeforeWriteMask & GuestEabiVisibility.CallReadCr), false);
+            }
+
+            return new GuestFlagState(contract.CrReadBeforeWriteMask, contract.ReadsXerBeforeWrite);
         }
 
         // Non-address targets are either runtime helpers with a cataloged
