@@ -309,6 +309,47 @@ public class RegisterResidencyCodeGenTests
     }
 
     [Fact]
+    public void ALinkedCallFlushesOnlyRegistersChangedSinceTheContextLastHeldThem()
+    {
+        // Two bl calls into a body that reads r5, r6 and r28. Before the first, all three were
+        // written; between them only r6 was. r28 went into the context at the first call and
+        // came back unchanged (nonvolatile); r5 is volatile and dead after it.
+        var function = new IrFunction("two_linked_calls", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrBinary("r28", IrValue.Register("r28"), IrValue.Imm(1), "add"),
+                new IrBinary("r5", IrValue.Register("r5"), IrValue.Imm(1), "add"),
+                new IrBinary("r6", IrValue.Register("r6"), IrValue.Imm(1), "add"),
+                new IrAssign("lr", IrValue.Imm(0x80001010)),
+                new IrCall(string.Empty, "0x80002000", Array.Empty<IrValue>()),
+                new IrBinary("r6", IrValue.Register("r28"), IrValue.Imm(2), "add"),
+                new IrAssign("lr", IrValue.Imm(0x80001018)),
+                new IrCall(string.Empty, "0x80002000", Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+        var contracts = new Dictionary<uint, GuestAbiContract>
+        {
+            [0x80002000u] = NarrowContract(gprRead: (1u << 5) | (1u << 6) | (1u << 28))
+        };
+
+        var body = FunctionBody(Emit(function, guestAbiContracts: contracts), "two_linked_calls");
+        var first = body.IndexOf("InvokeDirectCpu<0x80002000u>(ctx);", StringComparison.Ordinal);
+        var second = body.IndexOf("InvokeDirectCpu<0x80002000u>(ctx);", first + 1, StringComparison.Ordinal);
+        Assert.True(first > 0 && second > first);
+        var beforeFirst = body[..first];
+        var between = body[first..second];
+
+        Assert.Contains("ctx->gpr[5] = r5;", beforeFirst, StringComparison.Ordinal);
+        Assert.Contains("ctx->gpr[6] = r6;", beforeFirst, StringComparison.Ordinal);
+        Assert.Contains("ctx->gpr[28] = r28;", beforeFirst, StringComparison.Ordinal);
+        Assert.Contains("ctx->gpr[6] = r6;", between, StringComparison.Ordinal);
+        Assert.DoesNotContain("ctx->gpr[5] = r5;", between, StringComparison.Ordinal);
+        Assert.DoesNotContain("ctx->gpr[28] = r28;", between, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BoundaryNarrowingFlushesRegistersTheCalleeOnlyMayWrite()
     {
         // A register the callee may write has to be flushed even though the
