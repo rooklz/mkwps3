@@ -4,7 +4,6 @@
 
 <p align="center">
   <b>Mario Kart Wii, running natively on a PlayStation 3.</b><br>
-  No emulator. The whole game, recompiled for the Cell.
 </p>
 
 <p align="center">
