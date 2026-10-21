@@ -167,11 +167,13 @@ MKW_PPC_NO_INLINE MKW_PPC_COLD inline void StoreGeneric(uint32_t gqr, uint8_t* p
     }
 }
 
-// The hot shape: a float GQR is one compare, then the lfs/stfs pair.
+// The hot shape: a float GQR is one compare, then the lfs/stfs pair. GQR0 needs not even
+// the compare: it is the compiler's -- CodeWarrior moves plain paired singles through it --
+// and the OS sets it to 0 (unscaled float) in __PSInit and never changes it.
 template <uint32_t W, uint32_t I>
 MKW_PPC_FORCE_INLINE FprVal Load(uint32_t gqr, uint8_t* p, uint32_t addr)
 {
-    if (((gqr >> 16) & 7u) == 0u && p)
+    if ((I == 0u || ((gqr >> 16) & 7u) == 0u) && p)
         return LoadFloat<W>(p);
     return LoadGeneric<W, I>(gqr, p, addr);
 }
@@ -179,7 +181,7 @@ MKW_PPC_FORCE_INLINE FprVal Load(uint32_t gqr, uint8_t* p, uint32_t addr)
 template <uint32_t W, uint32_t I>
 MKW_PPC_FORCE_INLINE void Store(uint32_t gqr, uint8_t* p, uint32_t addr, FprVal v)
 {
-    if ((gqr & 7u) == 0u && p) {
+    if ((I == 0u || (gqr & 7u) == 0u) && p) {
         StoreFloat<W>(p, v);
         return;
     }
