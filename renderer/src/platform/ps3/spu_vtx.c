@@ -169,9 +169,10 @@ static u8 *arena_alloc(u32 bytes, u32 *io_off_out)
 
 void spu_vtx_init(void)
 {
-    FILE *f = fopen("/dev_hdd0/tmp/dolphin-spu.txt", "rb");
-    if (!f) { LOG_INFO(LOG_CORE, "spu_vtx: flag absent, SPU path off"); return; }
-    fclose(f);
+    /* On unless /dev_hdd0/tmp/mkwii-nospu.txt exists, which puts all the
+     * vertex work back on the PPU (slower; for ruling the SPUs out). */
+    FILE *f = fopen("/dev_hdd0/tmp/mkwii-nospu.txt", "rb");
+    if (f) { fclose(f); LOG_INFO(LOG_CORE, "spu_vtx: mkwii-nospu.txt present, SPU path off"); return; }
     LOG_INFO(LOG_CORE, "spu_vtx: initialising");
 
     s_ring = (u8 *)memalign(128, RING_BYTES);
