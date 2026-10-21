@@ -41,8 +41,8 @@ Questions, ideas and "has anyone tried this on HEN?" are better off in
 
 ### Where help would make the biggest difference
 
-- **The renderer.** Karts and characters render as dark silhouettes, bloom shows up as boxes
-  and Mii faces are wrong. Anyone who knows the RSX or the Wii's TEV well would be a huge help.
+- **The renderer.** Mii heads come out as black squares, and there'll be other effects that
+  aren't quite right yet. Anyone who knows the RSX or the Wii's TEV well would be a huge help.
 - **Speed.** Anything that gets the game thread from ~23ms a frame towards 16.7ms. The audio mix
   moving to an SPU is the next big obvious one.
 - **Testing** on hardware other than mine: Slims, Super Slims, HEN, different firmwares.

@@ -40,7 +40,7 @@ suit the Cell's quirks.
   <img src="docs/screenshots/title.png" width="49%" alt="Title screen">
   <img src="docs/screenshots/main-menu.png" width="49%" alt="Main menu">
   <img src="docs/screenshots/character-select.png" width="49%" alt="Character select">
-  <img src="docs/screenshots/luigi-circuit.png" width="49%" alt="Luigi Circuit course intro">
+  <img src="docs/screenshots/luigi-circuit.png" width="49%" alt="Mario on the start line at Luigi Circuit">
 </p>
 
 <sub>Straight off a real PS3 with the app's own screenshot command. The game renders at 720x480; these are shown at 16:9, same as on a widescreen TV.</sub>
@@ -57,15 +57,15 @@ It's very much a work in progress, but it's further along than you might expect.
 | ✅ Saves and licences | Kept on the PS3's hard drive |
 | ✅ DualShock 3 | Presented to the game as a GameCube controller |
 | ⚠️ Speed | Around **30fps** in races. 60 is the goal and the main thing I'm working on |
-| ⚠️ Karts and characters | Render as dark silhouettes in races (lighting bug) |
-| ⚠️ Some effects | Bloom shows up as boxes in places, and Mii faces aren't right yet |
+| ✅ Karts and characters | Properly lit and coloured now (they used to be dark silhouettes) |
+| ⚠️ Some effects | Mii heads come out as black squares, so the crowd looks a bit odd. There'll be other bits that aren't quite right yet too |
 | ❓ VS, Time Trials, Battle | Should work, but they've had a lot less testing |
 | ❓ Split-screen | Up to four pads are wired up, but it hasn't really been tested |
 | ❌ Online | Not hooked up |
 | ❌ Wii Remote, wheel, nunchuk | DualShock 3 only for now |
 | ❌ NTSC and other regions | PAL only, for now |
 
-Here's a race as it looks today, silhouettes and all:
+Here's a race as it looks today:
 
 <p align="center">
   <img src="docs/screenshots/racing.png" width="70%" alt="Racing on Luigi Circuit">

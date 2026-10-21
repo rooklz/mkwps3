@@ -16,7 +16,10 @@ The first public version.
   convention, native single-precision maths, and fewer pointless save-and-reload pairs. Together
   with the system functions now done natively, a race frame went from about 35ms to 23ms on the
   game thread.
-- **Rendering:** vertex decoding, skinning and index building spread across the SPUs, with runs
-  of draws batched into single RSX draws.
+- **Karts and drivers look right.** They were dark silhouettes in races; the game asks for a
+  fixed alpha on them that wasn't being honoured. Lights were also the wrong colour.
+- **Bloom works.** It used to wash the screen out everywhere but the top-left corner.
+- **Rendering:** vertex decoding, skinning and index building spread across the SPUs (now on by
+  default), with runs of draws batched into single RSX draws.
 - Exceptions thrown inside the game thread are caught properly again (a linker quirk had broken
   them).
