@@ -140,6 +140,9 @@ int  rsx_probe_alive(void);
 /* Block until the GPU has retired everything submitted so far. Bounded.
  * Returns 1 if it went idle, 0 on timeout. */
 int  rsx_wait_idle(void);
+/* How long after the CPU queued a recent frame the RSX finished it, and how often
+ * it finishes one, in ms (0 until known; rsx_ms is not measured and stays 0). */
+void rsx_frame_timing(double *rsx_ms, double *lag_ms, double *period_ms);
 
 /* GPU frame fence. rsx_fence_emit(n) queues a back-end label write of n, which
  * lands only after every command queued before it has finished rendering.

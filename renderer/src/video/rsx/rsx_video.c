@@ -130,11 +130,14 @@ static void rsx_flip_handler(const u32 head)
     s_flip_irqs++;
 }
 
+static void lag_observe(void);
+
 static void rsx_vblank_handler(const u32 head)
 {
     u32 data, buf, qid;
     (void)head;
     s_vblank_irqs++;
+    lag_observe();
 
     if (!s_label_prepared)   return;
     if (s_flip_in_flight)    return;    /* "when this function is called twice
@@ -218,6 +221,7 @@ static int rsx_acquire_buffer(void)
         prof_enter(PH_WAITFLIP);
         usleep(200);
         prof_exit();
+        lag_observe();      /* the RSX finishing is what this is waiting for */
         waits++;
         if (waits == 1) s_present_waits++;
     }
@@ -1832,6 +1836,50 @@ void rsx_set_vertex_base(struct _gcmCtxData *c, u32 base_offset)
 
 static volatile u32 *s_fence_label;
 
+/* How far behind the RSX runs, for rsx_frame_timing. Each frame opens with a
+ * fence that lands once the RSX has drawn everything queued before it. When
+ * each serial was first queued, and when it is first seen landed (every emit
+ * and every vblank looks), gives how long after the CPU queued a frame the RSX
+ * finished it, to within a vblank. It adds no RSX commands: the RSX report
+ * methods wedged the RSX on this setup. */
+#define LAG_SLOTS 16u
+static u64 s_lag_queued_tb[LAG_SLOTS];
+static u32 s_lag_last_queued;
+static u32 s_lag_seen;
+static u64 s_lag_seen_tb;
+static volatile double s_lag_ms, s_lag_period_ms;
+
+static u64 timebase(void)
+{
+    u64 tb;
+    __asm__ volatile("mftb %0" : "=r"(tb));
+    return tb;
+}
+
+static void lag_observe(void)
+{
+    u32 done;
+    u64 now;
+    if (!s_fence_label)
+        return;
+    done = *s_fence_label;
+    if ((s32)(done - s_lag_seen) <= 0 || (s32)(s_lag_last_queued - done) >= (s32)LAG_SLOTS)
+        return;
+    now = timebase();
+    s_lag_ms = (double)(now - s_lag_queued_tb[done % LAG_SLOTS]) / 79800.0;
+    if (s_lag_seen_tb)
+        s_lag_period_ms = (double)(now - s_lag_seen_tb) / 79800.0 / (double)(done - s_lag_seen);
+    s_lag_seen = done;
+    s_lag_seen_tb = now;
+}
+
+void rsx_frame_timing(double *rsx_ms, double *lag_ms, double *period_ms)
+{
+    *rsx_ms = 0.0;
+    *lag_ms = s_lag_ms;
+    *period_ms = s_lag_period_ms;
+}
+
 static volatile u32 *fence_label(void)
 {
     if (!s_fence_label && g_rsx.inited) {
@@ -1846,7 +1894,12 @@ void rsx_fence_emit(u32 serial)
 {
     if (!fence_label())
         return;
+    if (serial != s_lag_last_queued) {   /* rsx_fence_wait re-queues the one it waits on */
+        s_lag_queued_tb[serial % LAG_SLOTS] = timebase();
+        s_lag_last_queued = serial;
+    }
     rsxSetWriteBackendLabel(s_ctx, RSX_LABEL_FENCE, serial);
+    lag_observe();
 }
 
 u32 rsx_fence_done(void)

@@ -309,6 +309,17 @@ int mkw_renderer_stats(char *out, unsigned cap)
     out += n;
     cap -= (unsigned)n;
     {
+        double rsx_ms, lag_ms, period_ms;
+        int m;
+        rsx_frame_timing(&rsx_ms, &lag_ms, &period_ms);
+        (void)rsx_ms;
+        m = snprintf(out, cap, "rsx finishes a frame %.1f ms after it is queued, one every %.1f ms\n",
+                     lag_ms, period_ms);
+        if (m < 0 || (unsigned)m >= cap)
+            return n;
+        out += m; cap -= (unsigned)m; n += m;
+    }
+    {
         /* Per-consumer SPU window, published every 256 jobs: jobs, ticks
          * working, ticks of that waiting on DMA, single-element gathers and
          * jobs that needed them. */
