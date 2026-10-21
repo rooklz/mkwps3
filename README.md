@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="docs/assets/banner.png" alt="MKW PS3" width="100%">
+  <img src="docs/assets/logo.png" alt="MKW PS3" width="420">
 </p>
 
 <p align="center">
-  <b>Mario Kart Wii, running natively on a PlayStation 3.</b><br>
+  <b>A native PS3 port of Mario Kart Wii, made with static recompilation.</b>
 </p>
 
 <p align="center">
@@ -15,17 +15,10 @@
 
 ---
 
-This is Mario Kart Wii running on a PS3. Not through an emulator: there isn't a Wii
-emulator for the PS3, and the console couldn't run one at any sort of speed anyway.
-Instead, the game's own code is translated into native PS3 code ahead of time, and
-everything it expects to find on a Wii (the graphics chip, the sound chip, the
-controllers, the disc drive) is rebuilt on the PS3 side.
-
-It started as a port of [WiiCompiled](https://github.com/patchzyy/Wiicompiled), the
-static recompiler that brought Mario Kart Wii to PC, and grew from there into
-something that properly uses the PS3's hardware: the Cell's SPUs do the vertex work,
-the RSX draws everything, and the recompiler has been taught a fair few tricks to
-suit the Cell's quirks.
+It's built on [WiiCompiled](https://github.com/patchzyy/Wiicompiled), the recompiler
+behind the PC port, with everything the game expects from a Wii rebuilt around the PS3's
+hardware: the RSX does the drawing, the SPUs take the vertex work and the audio mix, and
+the recompiler has picked up a few tricks for the Cell along the way.
 
 > [!IMPORTANT]
 > There's no Nintendo code, no game files and nothing from the disc in this repo,
@@ -153,8 +146,8 @@ saves stay put.
 ## FAQ
 
 **Is this an emulator?**
-No. All of the game's code is compiled to native PS3 code before it ever runs. There's
-nothing pretending to be a Wii CPU or GPU at runtime.
+No, the game's code is compiled for the PS3 before it runs. [How it works](docs/HOW-IT-WORKS.md)
+has the details.
 
 **Can't I just download a ready-made .pkg?**
 No, and please don't share yours. Anything that runs would have Nintendo's game inside

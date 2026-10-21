@@ -12,7 +12,7 @@ system underneath. So MKW PS3 does it in two halves.
 executable (`main.dol`) and its race code (`StaticR.rel`) and turns every function it can
 find, about thirty thousand of them, into C++. That C++ gets compiled with an ordinary PS3
 compiler (GCC 7.2 from the homebrew toolchain), so by the time you press play it's just
-native code. No interpreting, no JIT, no emulated CPU.
+native code, with nothing interpreting or emulating the Wii's CPU.
 
 The interesting bit is getting that translated code to run *fast* on the Cell's PPE,
 which is fussy in its own particular ways:
