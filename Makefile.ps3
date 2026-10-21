@@ -44,6 +44,15 @@ CXXFLAGS_GEN := -std=gnu++17 $(ARCH) $(OPT) -DMKW_PIN_ARENA -DNDEBUG $(EXTRA_GEN
                 -I$(REPO)/platform/ps3/compat -include mkw_ps3_compat.h \
                 -I$(REPO)/runtime/include -I$(WS)/generated -w
 
+# MKW_HPROF=1: instrument the renderer thread's code (the renderer and the GX
+# FIFO parser) for `hprof`: a measurement build, with its own OUT=
+# (platform/ps3/hprof_ps3.cpp). Headers and the C++ library are left out; their
+# small helpers are called in tight loops.
+ifeq ($(MKW_HPROF),1)
+HPROF_FLAGS := -finstrument-functions -finstrument-functions-exclude-file-list=.h,.tcc,/c++/
+CFLAGS_REN  += $(HPROF_FLAGS)
+endif
+
 # ---- sources ---------------------------------------------------------------
 
 RT_SRCS    := $(shell find $(REPO)/runtime/src -name '*.cpp' | sort) \
@@ -55,7 +64,8 @@ LV2_SRCS   := $(REPO)/platform/ps3/compat_lv2.cpp \
               $(REPO)/platform/ps3/bench_ps3.cpp \
               $(REPO)/platform/ps3/guest_flat_memory_ps3.cpp \
               $(REPO)/platform/ps3/audio_backend_ps3.cpp \
-              $(REPO)/platform/ps3/ax_spu_ps3.cpp
+              $(REPO)/platform/ps3/ax_spu_ps3.cpp \
+              $(REPO)/platform/ps3/hprof_ps3.cpp
 PLAT_SRCS  := $(REPO)/platform/ps3/main_ps3.cpp \
               $(REPO)/platform/ps3/pad_ps3.cpp \
               $(REPO)/platform/ps3/data_sections_ps3.cpp \
@@ -102,6 +112,10 @@ all: $(TARGET).self $(SPU_ELF) $(AX_SPU_ELF)
 runtime: $(RT_OBJS) $(LV2_OBJS) $(PLAT_OBJS) $(ASM_OBJS) $(REN_OBJS) $(SPU_ELF) $(AX_SPU_ELF)
 
 DEPFLAGS = -MMD -MP
+
+ifeq ($(MKW_HPROF),1)
+$(OUT)/obj$(REPO)/runtime/src/hle/gxhw/gx_hw.cpp.o: CXXFLAGS_RT += $(HPROF_FLAGS)
+endif
 
 $(RT_OBJS): $(OUT)/obj/%.o: /%
 	@mkdir -p $(dir $@)

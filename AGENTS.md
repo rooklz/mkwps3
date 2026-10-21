@@ -55,6 +55,7 @@ Everything is driven remotely (setup in [docs/BUILDING.md](docs/BUILDING.md#the-
 | `ps3-shot.sh [file]` | Screenshot of the next frame |
 | `ps3-pad.sh` | Presses buttons on a virtual controller |
 | `ps3-pcs.sh` | Profiles the translated game code by function |
+| `ps3-hprof.sh <gpu\|game>` | Profiles the renderer and FIFO parser by function (needs a `MKW_HPROF=1` build) |
 | `ps3-recover.sh` | Hard-reboots the console through webMAN when the RSX has locked up |
 
 The control port (TCP 4001, `printf '<command>' | nc <console> 4001`) also takes: `gfx`
