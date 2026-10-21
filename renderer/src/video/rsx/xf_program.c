@@ -301,6 +301,9 @@ static void emit_light(VPEmitter *e, unsigned light, unsigned attn,
 
 /* One colour channel: colour components and alpha are separate LitChannel
  * registers and are generated one after the other into the same output. */
+/* Control port `xfshow`: 0 normal, 1 material, 2 lighting, 3 red, 4 raw attribute. */
+int g_xf_show_mode;
+
 static void emit_channel(VPEmitter *e, const GXState *g, unsigned chan,
                          unsigned *lights_used)
 {
@@ -361,8 +364,18 @@ static void emit_channel(VPEmitter *e, const GXState *g, unsigned chan,
     /* out = material * clamp(acc). The saturate flag does the clamp. */
     vp_emit_vec(e, VP_VEC_MOV, XR_ACC, 0, VP_MASK_ALL, 1,
                 vp_temp(XR_ACC), vp_none(), vp_none());
-    vp_emit_vec(e, VP_VEC_MUL, out, 1, VP_MASK_ALL, 0,
-                vp_temp(XR_MAT), vp_temp(XR_ACC), vp_none());
+    if (g_xf_show_mode == 1)        /* control port `xfshow mat`: the material alone */
+        vp_emit_vec(e, VP_VEC_MOV, out, 1, VP_MASK_ALL, 0, vp_temp(XR_MAT), vp_none(), vp_none());
+    else if (g_xf_show_mode == 2)   /* `xfshow light`: the lighting alone */
+        vp_emit_vec(e, VP_VEC_MOV, out, 1, VP_MASK_ALL, 0, vp_temp(XR_ACC), vp_none(), vp_none());
+    else if (g_xf_show_mode == 3)   /* `xfshow red`: a constant */
+        vp_emit_vec(e, VP_VEC_MOV, out, 1, VP_MASK_ALL, 0,
+                    vp_swizzle(vp_const(XF_CONST_ONE), 1, 0, 0, 1), vp_none(), vp_none());
+    else if (g_xf_show_mode == 4)   /* `xfshow attr`: the colour attribute, untouched */
+        vp_emit_vec(e, VP_VEC_MOV, out, 1, VP_MASK_ALL, 0, vp_input(vin), vp_none(), vp_none());
+    else
+        vp_emit_vec(e, VP_VEC_MUL, out, 1, VP_MASK_ALL, 0,
+                    vp_temp(XR_MAT), vp_temp(XR_ACC), vp_none());
 }
 
 /* ------------------------------------------------------------------ */
@@ -858,6 +871,7 @@ u64 xf_state_hash(const GXState *g)
     u64 h = 1469598103934665603ull;
 
     #define MIX(v) do { h ^= (u64)(v); h *= 1099511628211ull; } while (0)
+    MIX(g_xf_show_mode);
     MIX(g_xf_mirror ? 0x4D4952u : 0u);     /* mirror programs read other rows */
 
     /* Only the shape. The projection and texture matrices live in XF memory and

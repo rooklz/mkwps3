@@ -2096,6 +2096,34 @@ static void ftrace_copy(const BPCopy *cp, const GXState *g, u64 idx)
                   ((u32)(g->bp.blend.alpha_update != 0) << 24);
 }
 
+static int s_dinfo_vtx;   /* dinfo: log this draw's decoded vertices too */
+u32 g_draw_skip_min, g_draw_skip_max;
+
+/* dinfo: the draw's whole transform state, for tests/renderer/vpdump to rebuild
+ * its vertex program on a desktop. Big-endian u32s throughout. */
+static void dinfo_write_state(const GXState *g, unsigned vat)
+{
+    extern unsigned g_gx_state_mask;
+    extern int g_xf_mirror;
+    FILE *f = fopen("/dev_hdd0/tmp/dinfo-state.bin", "wb");
+    const GXCPRegs *cp = &g->parser.cp;
+    u32 hdr[6];
+    unsigned r;
+    if (!f)
+        return;
+    hdr[0] = 0x58465331u; hdr[1] = XF_MEM_SIZE; hdr[2] = g_gx_state_mask;
+    hdr[3] = (u32)g_xf_mirror; hdr[4] = vat; hdr[5] = 0;
+    fwrite(hdr, sizeof hdr, 1, f);
+    fwrite(g->xf.mem, sizeof(u32), XF_MEM_SIZE, f);
+    fwrite(g->bp.raw, sizeof(u32), 256, f);
+    fwrite(cp, sizeof *cp, 1, f);
+    for (r = 0; r < 4; r++) {
+        fwrite(g->bp.tev_reg[r], sizeof(f32), 4, f);
+        fwrite(g->bp.tev_konst[r], sizeof(f32), 4, f);
+    }
+    fclose(f);
+}
+
 /* dinfo by texture: does this draw sample the texture at `addr` on any stage? */
 u32 g_draw_info_tex;
 static int draw_samples_texture(const GXState *g, u32 addr)
@@ -3355,6 +3383,12 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
             if (idx < (u64)g_draw_win_min || idx >= (u64)g_draw_win_max)
                 return;
         }
+        {   /* control port `dskip <min> <max>`: leave out the draws in [min,max) */
+            extern u32 g_draw_skip_min, g_draw_skip_max;
+            u64 idx = g_gx_render.draws - 1 - g_draw_frame_base;
+            if (g_draw_skip_max && idx >= (u64)g_draw_skip_min && idx < (u64)g_draw_skip_max)
+                return;
+        }
         if (s_ft_on)
             ftrace_draw(g, prim, vertex_count,
                         g_gx_render.draws - 1 - g_draw_frame_base, vat, data_addr);
@@ -3368,6 +3402,9 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
             extern u32 g_draw_info_tex;
             int hit = g_draw_info_arm &&
                       (g_draw_info_minv ? (vertex_count >= g_draw_info_minv)
+                       : g_draw_info_tex >= 0xFFFFFF00u
+                             ? ((g->parser.cp.vcd_lo & 1u) &&
+                                g->bp.genmode.num_tev_stages == (g_draw_info_tex & 0xFFu))
                        : g_draw_info_tex ? draw_samples_texture(g, g_draw_info_tex)
                                          : (idx == (u64)g_draw_info_idx));
             /* Aggregate mode: minv armed counts EVERY matching draw's frustum
@@ -3419,6 +3456,10 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
             if (hit) {
                 const BPTexture *t0 = &g->bp.tex[g->bp.tev[0].tex_map & 7u];
                 g_draw_info_arm = 0;
+                s_dinfo_vtx = 1;
+                dinfo_write_state(g, vat);
+                LOG_INFO(LOG_CORE, "DVCD lo=%08x hi=%08x vat=%u", (unsigned)g->parser.cp.vcd_lo,
+                         (unsigned)g->parser.cp.vcd_hi, vat);
                 LOG_INFO(LOG_CORE, "DINFO draw=%llu prim=%u pnmtx=%u verts=%u stages=%u "
                          "blend=%u sub=%u src=%u dst=%u dither=%u "
                          "tex0=%08x %ux%u fmt=%u mode0=%06x logic=%u",
@@ -3498,11 +3539,13 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
                         VtxAttributes va9;
                         u32 c9 = vtx_decode(&g->parser.cp, vat, a9, &va9);
                         LOG_INFO(LOG_CORE, "DVTX%u tc0={%g %g}(n=%u) "
-                                 "pos={%g %g %g}", v9,
+                                 "pos={%g %g %g} col0=%u{%g %g %g %g} nrm%u={%g %g %g}", v9,
                                  va9.texcoord[0][0], va9.texcoord[0][1],
                                  va9.texcoord_count[0],
                                  va9.position[0], va9.position[1],
-                                 va9.position[2]);
+                                 va9.position[2], va9.color_present[0],
+                                 va9.color[0][0], va9.color[0][1], va9.color[0][2], va9.color[0][3],
+                                 va9.normal_count, va9.normal[0], va9.normal[1], va9.normal[2]);
                         if (!c9) break;
                         a9 += c9;
                     }
@@ -3561,6 +3604,30 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
                     }
                     LOG_INFO(LOG_CORE, "DCENSUS %u/%u in-frustum, %u w<=0",
                              inf, n9, wneg);
+                }
+                {   unsigned l9, s9;
+                    const u32 *x9 = g->xf.mem;
+                    /* Lights any channel uses: bits 2-5 are lights 0-3, bits 11-14 lights 4-7. */
+                    const u32 ch9 = x9[0x100E] | x9[0x1010] | x9[0x100F] | x9[0x1011];
+                    const u32 lm9 = ((ch9 >> 2) & 0xFu) | (((ch9 >> 11) & 0xFu) << 4);
+                    LOG_INFO(LOG_CORE, "DLIT nchan=%u ccol0=%08x calp0=%08x ccol1=%08x calp1=%08x amb0=%08x amb1=%08x mat0=%08x mat1=%08x",
+                             x9[0x1009], x9[0x100E], x9[0x1010], x9[0x100F], x9[0x1011],
+                             x9[0x100A], x9[0x100B], x9[0x100C], x9[0x100D]);
+                    for (l9 = 0; l9 < 8; l9++)
+                        if ((lm9 >> l9) & 1u) {
+                            const u32 *L = &x9[0x600 + l9 * 16];
+                            union { u32 u; f32 f; } c[12];
+                            unsigned q;
+                            for (q = 0; q < 12; q++) c[q].u = L[4 + q];
+                            LOG_INFO(LOG_CORE, "DLIGHT %u col=%08x cos={%g %g %g} dist={%g %g %g} pos={%g %g %g} dir={%g %g %g}",
+                                     l9, L[3], c[0].f, c[1].f, c[2].f, c[3].f, c[4].f, c[5].f,
+                                     c[6].f, c[7].f, c[8].f, c[9].f, c[10].f, c[11].f);
+                        }
+                    for (s9 = 0; s9 < g->bp.genmode.num_tev_stages && s9 < 16; s9++)
+                        LOG_INFO(LOG_CORE, "DSTAGE %u cenv=%06x aenv=%06x ras=%u tex=%u map=%u coord=%u",
+                                 s9, g->bp.tev[s9].color_env, g->bp.tev[s9].alpha_env,
+                                 (unsigned)g->bp.tev[s9].ras_channel, (unsigned)g->bp.tev[s9].tex_enable,
+                                 (unsigned)g->bp.tev[s9].tex_map, (unsigned)g->bp.tev[s9].tex_coord);
                 }
                 {   unsigned r9;
                     for (r9 = 0; r9 < 4; r9++)
@@ -3791,6 +3858,18 @@ extern u32 g_draw_info_idx; extern int g_draw_info_arm; extern u32 g_draw_info_m
 #ifdef __PS3__
 decode_done:
 #endif
+    if (s_dinfo_vtx) {   /* dinfo: what the draw path itself wrote, as the RSX will read it */
+        s_dinfo_vtx = 0;
+        if (!spu_draw_active) {
+            unsigned v8;
+            for (v8 = 0; v8 < 4u && v8 < vertex_count; v8++)
+                LOG_INFO(LOG_CORE, "DOUT%u pos={%g %g %g} col=%02x%02x%02x%02x nrm={%g %g %g} tc0={%g %g}", v8,
+                         out[v8].pos[0], out[v8].pos[1], out[v8].pos[2],
+                         out[v8].col[0], out[v8].col[1], out[v8].col[2], out[v8].col[3],
+                         out[v8].nrm[0], out[v8].nrm[1], out[v8].nrm[2], out[v8].tex[0][0], out[v8].tex[0][1]);
+        } else
+            LOG_INFO(LOG_CORE, "DOUT: decoded on the SPU");
+    }
     if (!spu_draw_active)
         s_arena_used += vertex_count;
     g_gx_render.vertices += vertex_count;

@@ -213,6 +213,10 @@ extern "C" int mkw_where(char* out, unsigned cap);
 extern "C" void mkw_renderer_request_shot(void);
 extern "C" void mkw_renderer_request_ftrace(unsigned from);
 extern "C" void mkw_renderer_request_copy_dump(int index);
+extern "C" void mkw_renderer_set_tev_show(int mode);
+extern "C" void mkw_renderer_skip_draws(unsigned min, unsigned max);
+extern "C" void mkw_renderer_draw_window(unsigned min, unsigned max);
+extern "C" void mkw_renderer_set_xf_show(int mode);
 extern "C" void mkw_renderer_request_draw_info(unsigned index, unsigned texture);
 extern "C" uint8_t* MkwGuestArenaBase();
 extern "C" int mkw_renderer_stats(char* out, unsigned cap);
@@ -428,11 +432,36 @@ void Listener(void*)
             } else if (!std::strncmp(cmd, "dinfo ", 6)) {
                 // State, vertices and texgens of draw <n> of the next frame, or of the first draw
                 // sampling texture <hex addr> with `dinfo t<addr>`, to the log.
-                if (cmd[6] == 't')
+                if (cmd[6] == 's')   // `dinfo s<n>`: the first skinned draw with n TEV stages
+                    mkw_renderer_request_draw_info(0, 0xFFFFFF00u | (static_cast<unsigned>(std::atoi(cmd + 7)) & 0xFFu));
+                else if (cmd[6] == 't')
                     mkw_renderer_request_draw_info(0, static_cast<unsigned>(std::strtoul(cmd + 7, nullptr, 16)));
                 else
                     mkw_renderer_request_draw_info(static_cast<unsigned>(std::atoi(cmd + 6)), 0);
                 SendText(c, "armed\n");
+            } else if (!std::strncmp(cmd, "xfshow ", 7)) {
+                // Lit colours replaced by `mat` (the material alone), `light` (the lighting alone), `red`
+                // (a constant) or `attr` (the colour attribute as it arrives); `off` to stop.
+                const char* m = cmd + 7;
+                mkw_renderer_set_xf_show(!std::strncmp(m, "mat", 3) ? 1 : !std::strncmp(m, "light", 5) ? 2 : !std::strncmp(m, "red", 3) ? 3 : !std::strncmp(m, "attr", 4) ? 4 : 0);
+                SendText(c, "ok\n");
+            } else if (!std::strncmp(cmd, "dwin ", 5)) {
+                // Draw only the draws in [min,max) of every frame (`dwin 0 0` to stop).
+                unsigned lo = 0, hi = 0;
+                std::sscanf(cmd + 5, "%u %u", &lo, &hi);
+                mkw_renderer_draw_window(lo, hi);
+                SendText(c, "ok\n");
+            } else if (!std::strncmp(cmd, "dskip ", 6)) {
+                // Leave out the draws in [min,max) of every frame (`dskip 0 0` to stop).
+                unsigned lo = 0, hi = 0;
+                std::sscanf(cmd + 6, "%u %u", &lo, &hi);
+                mkw_renderer_skip_draws(lo, hi);
+                SendText(c, "ok\n");
+            } else if (!std::strncmp(cmd, "tevshow ", 8)) {
+                // Every fragment program outputs an intermediate instead: `ras`, `tex` or `off`.
+                const char* m = cmd + 8;
+                mkw_renderer_set_tev_show(!std::strncmp(m, "ras", 3) ? 1 : !std::strncmp(m, "tex", 3) ? 2 : 0);
+                SendText(c, "ok\n");
             } else if (!std::strncmp(cmd, "cshot ", 6)) {
                 // One EFB copy target's pixels, to /dev_hdd0/tmp/copy-<n>.ppm.
                 mkw_renderer_request_copy_dump(std::atoi(cmd + 6));
@@ -440,7 +469,7 @@ void Listener(void*)
             } else if (!std::strncmp(cmd, "fault", 5))
                 SendText(c, g_faultReport[0] ? g_faultReport : "no fault\n");
             else
-                SendText(c, "commands: ping, relaunch, put <path> <size>, cat <path>, ctx <guest|gpu>, pcs <secs>, where, fault, shot, ftrace [n], cshot <n>, dinfo <n>|t<addr>, peek <addr> <len>, gfx, prof, pad <hex> <reads> [x y], bench\n");
+                SendText(c, "commands: ping, relaunch, put <path> <size>, cat <path>, ctx <guest|gpu>, pcs <secs>, where, fault, shot, ftrace [n], cshot <n>, dinfo <n>|t<addr>|s<stages>, dwin <min> <max>, dskip <min> <max>, tevshow ras|tex|off, xfshow mat|light|red|attr|off, peek <addr> <len>, gfx, prof, pad <hex> <reads> [x y], bench\n");
         }
         netClose(c);
     }

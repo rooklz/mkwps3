@@ -18,6 +18,9 @@ extern unsigned g_tev_intensity_maps;
 
 #include <string.h>
 
+/* Control port `tevshow`: 0 normal, 1 the lit vertex colour, 2 stage 0's texture sample. */
+int g_tev_show_mode;
+
 #define BITS(v, lsb, width) (((u32)(v) >> (lsb)) & ((1u << (width)) - 1u))
 
 /* ------------------------------------------------------------------ */
@@ -1154,6 +1157,9 @@ int tev_generate(const BPState *bp, FPEmitter *e, TevProgramInfo *info)
 
             fp_emit_tex(e, FP_OP_TEX, TEV_REG_TEX, FP_MASK_ALL, FP_PREC_FP32, 0,
                         st->tex_map & 7u, coord);
+            if (g_tev_show_mode == 2 && i == 0)   /* diagnostic: keep stage 0's sample */
+                fp_emit(e, FP_OP_MOV, 14, FP_MASK_ALL, FP_PREC_FP32, 0,
+                        fp_temp(TEV_REG_TEX), fp_none(), fp_none());
 
             /* An intensity EFB copy (I4/I8/IA4/IA8 with the intensity bit)
              * stores luma, which the pixel engine computes on the way out:
@@ -1262,7 +1268,16 @@ int tev_generate(const BPState *bp, FPEmitter *e, TevProgramInfo *info)
          * IR yields srcA=0 for the quad's captured state. */
         extern int g_tev_show_alpha;
         extern int g_tev_show_red;
-        if (g_tev_show_red) {
+        if (g_tev_show_mode == 1) {
+            /* Diagnostic (control port `tevshow ras`): the lit vertex colour. */
+            fp_emit(e, FP_OP_MOV, 0, FP_MASK_ALL, FP_PREC_FP32, 0,
+                    fp_input(FP_IN_COL0), fp_none(), fp_none());
+        } else if (g_tev_show_mode == 2) {
+            /* Diagnostic (`tevshow tex`): stage 0's texture sample, as fetched. */
+            fp_emit(e, FP_OP_MOV, 0, FP_MASK_ALL, FP_PREC_FP32, 0,
+                    stages && bp->tev[0].tex_enable ? fp_temp(14) : fp_imm(1, 0, 1, 1),
+                    fp_none(), fp_none());
+        } else if (g_tev_show_red) {
             /* Diagnostic: solid red from every fragment program. If geometry
              * rasterises at all it shows as red silhouettes; separates
              * "no fragments" from "fragments coloured black". */
@@ -1346,6 +1361,7 @@ u64 tev_state_hash(const BPState *bp)
 
     MIX(stages);
     MIX(g_tev_intensity_maps);
+    MIX(g_tev_show_mode);
     {   unsigned k9;
         MIX(tev_writes_const_alpha(bp, &k9) ? 0x100u | k9 : 0u);
     }

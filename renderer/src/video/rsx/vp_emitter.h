@@ -382,10 +382,19 @@ DOL_INLINE void vp_init(VPEmitter *e, u32 *buffer, u32 capacity_words)
  * temporary. The scalar slot is left idle, which means its destination must be
  * explicitly marked unused -- the whole point of the two-slot encoding is that
  * both halves are always present. */
+#ifdef VP_TRACE
+/* Host-side debugging (tests/renderer): every instruction as text. */
+void vp_trace(int scalar, unsigned op, unsigned dst, int to_output, unsigned mask, int sat,
+              const VPSrc *srcs, unsigned nsrc);
+#endif
+
 DOL_INLINE void vp_emit_vec(VPEmitter *e, unsigned op, unsigned dst,
                             int to_output, unsigned mask, int saturate,
                             VPSrc a, VPSrc b, VPSrc c)
 {
+#ifdef VP_TRACE
+    { VPSrc t[3]; t[0] = a; t[1] = b; t[2] = c; vp_trace(0, op, dst, to_output, mask, saturate, t, 3); }
+#endif
     u32 w[4] = { 0, 0, 0, 0 };
     VPSrc logical[3];
     VPSrc slot[3];
@@ -461,6 +470,9 @@ DOL_INLINE void vp_emit_sca(VPEmitter *e, unsigned op, unsigned dst,
                             int to_output, unsigned mask, int saturate,
                             VPSrc a)
 {
+#ifdef VP_TRACE
+    vp_trace(1, op, dst, to_output, mask, saturate, &a, 1);
+#endif
     u32 w[4] = { 0, 0, 0, 0 };
 
     if (e->used + 4 > e->capacity) { e->overflow = 1; return; }

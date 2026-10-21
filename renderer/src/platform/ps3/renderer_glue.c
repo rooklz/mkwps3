@@ -189,10 +189,41 @@ void mkw_renderer_request_draw_info(unsigned index, unsigned texture)
     extern u32 g_draw_info_tex;
     extern int g_draw_info_arm;
     g_draw_info_tex = texture;
+    printf("[gfx] dinfo armed: draw %u texture %08x\n", index, texture);
     log_set_level(LOG_CORE, LOG_LEVEL_INFO);   /* the dump is INFO-level; frame_done lowers it again */
     s_dinfo_pending = 1;
     g_draw_info_idx = index;
     g_draw_info_arm = 1;
+}
+
+void mkw_renderer_set_xf_show(int mode)
+{
+    extern int g_xf_show_mode;
+    extern int g_shader_flush_req;
+    g_xf_show_mode = mode;
+    g_shader_flush_req = 1;
+}
+
+void mkw_renderer_draw_window(unsigned min, unsigned max)
+{
+    extern u32 g_draw_win_min, g_draw_win_max;
+    g_draw_win_min = min;
+    g_draw_win_max = max;
+}
+
+void mkw_renderer_skip_draws(unsigned min, unsigned max)
+{
+    extern u32 g_draw_skip_min, g_draw_skip_max;
+    g_draw_skip_min = min;
+    g_draw_skip_max = max;
+}
+
+void mkw_renderer_set_tev_show(int mode)
+{
+    extern int g_tev_show_mode;
+    extern int g_shader_flush_req;
+    g_tev_show_mode = mode;
+    g_shader_flush_req = 1;
 }
 
 void mkw_renderer_request_copy_dump(int index)
@@ -224,7 +255,7 @@ static void frame_done(void *ctx)
     }
     if (s_dinfo_pending) {
         extern int g_draw_info_arm;
-        if (!g_draw_info_arm || ++s_dinfo_pending > 3) {
+        if (!g_draw_info_arm || ++s_dinfo_pending > 30) {
             /* Dumped (or the draw never came): stop the copy-by-copy INFO flood. */
             g_draw_info_arm = 0;
             s_dinfo_pending = 0;
