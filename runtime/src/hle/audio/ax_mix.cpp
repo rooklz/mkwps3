@@ -35,6 +35,10 @@
 static std::atomic<uint64_t> g_mixWorkTicks{0};
 static std::atomic<uint64_t> g_mixJoinTicks{0};
 static std::atomic<uint64_t> g_mixVoices{0};
+// SPU decrementer ticks (the same 79.8 MHz) the SPU mixer spent on the voices.
+static std::atomic<uint64_t> g_mixSpuTicks{0};
+static std::atomic<uint64_t> g_mixSpuWaitPb{0};
+static std::atomic<uint64_t> g_mixSpuWaitSmp{0};
 
 static inline uint64_t MixTicks()
 {
@@ -48,14 +52,30 @@ static inline uint64_t MixTicks()
 }
 
 #if defined(__PPU__) || defined(__PS3__)
+#include "spu/ax_spu_job.h"
 extern "C" int mkw_lv2_thread_set_priority(int priority);
+// platform/ps3/ax_spu_ps3.cpp
+extern "C" AxSpuJob* mkw_ax_spu_job(void);
+extern "C" void mkw_ax_spu_kick(void);
+extern "C" const AxSpuResult* mkw_ax_spu_wait(void);
+#define MKW_AX_SPU 1
+#else
+#define MKW_AX_SPU 0
 #endif
 
-extern "C" void mkw_mix_ticks(uint64_t* work, uint64_t* join, uint64_t* voices)
+extern "C" void mkw_mix_ticks(uint64_t* work, uint64_t* join, uint64_t* voices, uint64_t* spu)
 {
     *work = g_mixWorkTicks.load(std::memory_order_relaxed);
     *join = g_mixJoinTicks.load(std::memory_order_relaxed);
     *voices = g_mixVoices.load(std::memory_order_relaxed);
+    *spu = g_mixSpuTicks.load(std::memory_order_relaxed);
+}
+
+// Of the SPU mixer's time, how much went on waiting for PB and for sample reads.
+extern "C" void mkw_mix_spu_waits(uint64_t* pb, uint64_t* samples)
+{
+    *pb = g_mixSpuWaitPb.load(std::memory_order_relaxed);
+    *samples = g_mixSpuWaitSmp.load(std::memory_order_relaxed);
 }
 
 namespace AxDspHle {
@@ -154,6 +174,7 @@ public:
             m_mixIdle.wait(lock, [this] { return !m_mixPending && !m_mixBusy; });
             g_mixJoinTicks.fetch_add(MixTicks() - start, std::memory_order_relaxed);
         }
+        FinishSpuMix();
         PublishAuxOutputs();
     }
 
@@ -374,7 +395,10 @@ private:
             PushMail(kDspSync);
         }
 
-        const bool deferred = m_mixWorkerEnabled && EnsureMixWorker();
+        // With the SPU mixer the commands after the voices run at the join, so they see the
+        // aux buffers the same way the worker does.
+        const bool spu = !m_mixWorkerEnabled && SpuMixAvailable();
+        const bool deferred = spu || (m_mixWorkerEnabled && EnsureMixWorker());
         m_deferredAux = deferred;
         m_auxInCount = 0;
         if (deferred) {
@@ -387,7 +411,7 @@ private:
 
         m_mixLayout = layout;
         m_mixCmdListSize = m_cmdListSize;
-        if (deferred) {
+        if (deferred && !spu) {
             {
                 std::lock_guard<std::mutex> lock(m_mixMutex);
                 m_mixPending = true;
@@ -397,7 +421,18 @@ private:
         }
 
         const uint64_t start = MixTicks();
-        ExecuteCommandList(m_mixLayout, m_mixCmdListSize);
+        if (spu) {
+            uint32_t idx = 0;
+            uint32_t oldPbAddr = 0;
+            m_auxOutCount = 0;
+            if (RunCommands(m_mixLayout, m_mixCmdListSize, idx, oldPbAddr, true)) {
+                m_spuPending = true;
+                m_spuResumeIdx = idx;
+                m_spuOldPbAddr = oldPbAddr;
+            }
+        } else {
+            ExecuteCommandList(m_mixLayout, m_mixCmdListSize);
+        }
         g_mixWorkTicks.fetch_add(MixTicks() - start, std::memory_order_relaxed);
     }
 
@@ -495,9 +530,17 @@ private:
     void ExecuteCommandList(AXCommandLayout layout, uint32_t cmdListSize) {
         uint32_t idx = 0;
         uint32_t oldPbAddr = 0;
+        m_auxOutCount = 0;
+        RunCommands(layout, cmdListSize, idx, oldPbAddr, false);
+    }
+
+    // Runs the command list from `idx`. With `toSpu` the first PB list goes to the SPU
+    // mixer if it can take it, and this returns true straight after handing it over, with
+    // `idx` just past that command for FinishSpuMix to carry on from.
+    bool RunCommands(AXCommandLayout layout, uint32_t cmdListSize, uint32_t& idx, uint32_t& oldPbAddr,
+                     bool toSpu) {
         const bool newFilter = m_ucodeCrc != 0 ? UCodeUsesNewFilter(m_ucodeCrc) : layout != AXCommandLayout::Old;
         bool end = false;
-        m_auxOutCount = 0;
         while (!end && idx < cmdListSize) {
             const uint16_t cmd = m_cmdList[idx++];
             uint16_t volume = 0;
@@ -529,6 +572,9 @@ private:
                     ProcessPBList(oldPbAddr, newFilter, true);
                 } else {
                     addr = ReadAddress(idx);
+                    if (toSpu && StartSpuMix(addr, newFilter)) {
+                        return true;
+                    }
                     ProcessPBList(addr, newFilter, false);
                 }
                 break;
@@ -580,6 +626,78 @@ private:
                 break;
             }
         }
+        return false;
+    }
+
+    bool SpuMixAvailable() {
+#if MKW_AX_SPU
+        return g_mixMem1.load(std::memory_order_relaxed) != nullptr && mkw_ax_spu_job() != nullptr;
+#else
+        return false;
+#endif
+    }
+
+    // Hands the voices of PB list `pbAddr` to the SPU mixer. It accumulates into m_bus and
+    // m_wmBus and writes the PBs back, so nothing here touches either until FinishSpuMix.
+    bool StartSpuMix(uint32_t pbAddr, bool newFilter) {
+#if MKW_AX_SPU
+        // The PB layout is settled by the ucode CRC, or by the PPU's first walk detecting it.
+        if (m_pbLayout == PBLayout::Unknown) {
+            return false;
+        }
+        AxSpuJob* job = mkw_ax_spu_job();
+        if (!job) {
+            return false;
+        }
+        std::array<PBSegment, 3> segments{};
+        const size_t count = PBSegmentsForLayout(m_pbLayout, segments);
+        job->mem1_ea = reinterpret_cast<uintptr_t>(g_mixMem1.load(std::memory_order_relaxed));
+        job->mem2_ea = reinterpret_cast<uintptr_t>(g_mixMem2.load(std::memory_order_relaxed));
+        job->bus_ea = reinterpret_cast<uintptr_t>(m_bus.data());
+        job->wmbus_ea = reinterpret_cast<uintptr_t>(m_wmBus.data());
+        job->coef_ea = m_hasCoeffs ? reinterpret_cast<uintptr_t>(m_coeffs.data()) : 0;
+        job->pb_addr = pbAddr;
+        job->flags = (newFilter ? AX_SPU_NEW_FILTER : 0u) | (m_coeffsFit32 ? AX_SPU_COEFFS_FIT32 : 0u);
+        job->nseg = static_cast<uint32_t>(count);
+        for (size_t i = 0; i < count; ++i) {
+            job->seg[i][0] = static_cast<uint16_t>(segments[i].guestOffset);
+            job->seg[i][1] = static_cast<uint16_t>(segments[i].structOffset);
+            job->seg[i][2] = static_cast<uint16_t>(segments[i].byteCount);
+        }
+        mkw_ax_spu_kick();
+        return true;
+#else
+        (void)pbAddr;
+        (void)newFilter;
+        return false;
+#endif
+    }
+
+    // Waits for the SPU's voices, then runs the rest of the command list (aux returns,
+    // uploads, output) on the guest thread.
+    void FinishSpuMix() {
+#if MKW_AX_SPU
+        if (!m_spuPending) {
+            return;
+        }
+        m_spuPending = false;
+        const uint64_t start = MixTicks();
+        if (const AxSpuResult* result = mkw_ax_spu_wait()) {
+            g_mixVoices.fetch_add(result->voices, std::memory_order_relaxed);
+            g_mixSpuTicks.fetch_add(result->ticks, std::memory_order_relaxed);
+            g_mixSpuWaitPb.fetch_add(result->wait_pb, std::memory_order_relaxed);
+            g_mixSpuWaitSmp.fetch_add(result->wait_smp, std::memory_order_relaxed);
+            if (result->bad != 0 && !m_loggedSpuBadAccess.exchange(true, std::memory_order_relaxed)) {
+                RT_LOGF(RT_TAG_AUDIO, "SPU mixer skipped %u guest accesses outside MEM1/MEM2\n", result->bad);
+            }
+        }
+        const uint64_t resumed = MixTicks();
+        g_mixJoinTicks.fetch_add(resumed - start, std::memory_order_relaxed);
+        uint32_t idx = m_spuResumeIdx;
+        uint32_t oldPbAddr = m_spuOldPbAddr;
+        RunCommands(m_mixLayout, m_mixCmdListSize, idx, oldPbAddr, false);
+        g_mixWorkTicks.fetch_add(MixTicks() - resumed, std::memory_order_relaxed);
+#endif
     }
 
     void ReportUnknownCommand(uint16_t cmd, uint32_t word) {
@@ -1138,11 +1256,12 @@ private:
     bool m_triedLoadCoeffs = false;
     bool m_hasCoeffs = false;
     bool m_coeffsFit32 = false;
-    std::array<int16_t, 0x800> m_coeffs{};
+    // 128-aligned for the SPU mixer's DMA.
+    alignas(128) std::array<int16_t, 0x800> m_coeffs{};
     // Indexed by AxBus. The wiimote buses live in their own array because they
     // are 18 samples per frame rather than 96.
-    std::array<std::array<int, kAxSamplesPerFrame>, kAxRegularBusCount> m_bus{};
-    std::array<std::array<int, kAxWiimoteSamplesPerFrame>, kAxWiimoteBusCount> m_wmBus{};
+    alignas(128) std::array<std::array<int, kAxSamplesPerFrame>, kAxRegularBusCount> m_bus{};
+    alignas(128) std::array<std::array<int, kAxWiimoteSamplesPerFrame>, kAxWiimoteBusCount> m_wmBus{};
     uint16_t m_lastMainVolume = 0x8000;
     std::array<uint16_t, 3> m_lastAuxVolumes{};
 
@@ -1161,6 +1280,13 @@ private:
     std::atomic<bool> m_loggedAuxShadowOverflow{false};
     std::atomic<bool> m_loggedUnknownCommand{false};
     std::atomic<bool> m_loggedCmdListTruncated{false};
+    std::atomic<bool> m_loggedSpuBadAccess{false};
+
+    // An SPU mix in flight (DispatchCommandList to FinishSpuMix), and where the command
+    // list carries on after it.
+    bool m_spuPending = false;
+    uint32_t m_spuResumeIdx = 0;
+    uint32_t m_spuOldPbAddr = 0;
 
     // Aux marshalling. m_deferredAux is written by the guest thread before the
     // worker is signalled and read by whichever thread runs the mix.

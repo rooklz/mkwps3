@@ -48,7 +48,8 @@ namespace {
 extern volatile uint32_t* g_guestExecAddr;
 extern volatile uint32_t* g_guestEntries;
 extern volatile uint64_t* g_guestInstructions;
-extern "C" void mkw_mix_ticks(uint64_t* work, uint64_t* join, uint64_t* voices);
+extern "C" void mkw_mix_ticks(uint64_t* work, uint64_t* join, uint64_t* voices, uint64_t* spu);
+extern "C" void mkw_mix_spu_waits(uint64_t* pb, uint64_t* samples);
 extern "C" void mkw_rescue_set_app_dir(const char* dir);
 std::atomic<bool> g_fatalReported{false};
 std::atomic<int> g_exitCode{0};
@@ -163,20 +164,26 @@ void ReportStats()
     }
     lastFrames = frames;
     {
-        // AX mix time (on whichever thread mixes), the guest thread's waits for a mix
-        // worker, and voices mixed, per frame.
-        static uint64_t lastWork = 0, lastJoin = 0, lastVoices = 0;
+        // AX mix time on the PPU (whichever thread mixes), the guest thread's waits for a
+        // mix worker or the SPU, the SPU's own time, and voices mixed, per frame.
+        static uint64_t lastWork = 0, lastJoin = 0, lastVoices = 0, lastSpu = 0, lastPb = 0, lastSmp = 0;
         static unsigned long long lastMixFrames = 0;
-        uint64_t work = 0, join = 0, voices = 0;
-        mkw_mix_ticks(&work, &join, &voices);
+        uint64_t work = 0, join = 0, voices = 0, spu = 0, pb = 0, smp = 0;
+        mkw_mix_ticks(&work, &join, &voices, &spu);
+        mkw_mix_spu_waits(&pb, &smp);
         if (frames != lastMixFrames) {
             const double n = static_cast<double>(frames - lastMixFrames);
-            std::printf("mix %.2f ms (wait %.2f), %.0f voices/frame; ", static_cast<double>(work - lastWork) / 79800.0 / n,
-                        static_cast<double>(join - lastJoin) / 79800.0 / n, static_cast<double>(voices - lastVoices) / n);
+            auto ms = [n](uint64_t ticks) { return static_cast<double>(ticks) / 79800.0 / n; };
+            std::printf("mix %.2f ms (wait %.2f, spu %.2f: pb %.2f samples %.2f), %.0f voices/frame; ",
+                        ms(work - lastWork), ms(join - lastJoin), ms(spu - lastSpu), ms(pb - lastPb),
+                        ms(smp - lastSmp), static_cast<double>(voices - lastVoices) / n);
         }
         lastWork = work;
         lastJoin = join;
         lastVoices = voices;
+        lastSpu = spu;
+        lastPb = pb;
+        lastSmp = smp;
         lastMixFrames = frames;
     }
     {

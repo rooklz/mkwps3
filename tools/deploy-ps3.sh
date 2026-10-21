@@ -10,8 +10,8 @@ PORT=${PS3_FTP_PORT:-21}
 APP=${PS3_APP:-MKWP00001}
 OUT=${PS3_OUT:-$GEN/build/ps3}
 DEST="ftp://$PS3:$PORT/dev_hdd0/game/$APP/USRDIR"
-# vtx_spu.elf is loaded from USRDIR at run time; a stale one looks like a hung SPU.
-for f in mkwii_sections.bin vtx_spu.elf RELOAD.SELF EBOOT.BIN; do
+# The SPU programs are loaded from USRDIR at run time; a stale one looks like a hung SPU.
+for f in mkwii_sections.bin vtx_spu.elf ax_spu.elf RELOAD.SELF EBOOT.BIN; do
     curl -s -m 1800 -T "$OUT/$f" "$DEST/$f"
     echo "  pushed $f ($(( $(wc -c < "$OUT/$f") / 1024 )) KiB)"
 done
