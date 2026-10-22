@@ -124,7 +124,7 @@ rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR/USRDIR"
 cp "$REPO/pkg/ICON0.PNG" "$REPO/pkg/PIC1.PNG" "$PKG_DIR/"
 "$PS3_BIN/sfo" --title "$TITLE" --appid "$APPID" -f "$REPO/pkg/sfo.xml" "$PKG_DIR/PARAM.SFO" > /dev/null
-cp "$OUT/EBOOT.BIN" "$OUT/RELOAD.SELF" "$OUT/vtx_spu.elf" "$OUT/ax_spu.elf" "$OUT/mkwii_sections.bin" "$PKG_DIR/USRDIR/"
+cp "$OUT/EBOOT.BIN" "$OUT/RELOAD.SELF" "$OUT/vtx_spu.elf" "$OUT/ax_spu.elf" "$OUT/gxf_spu.elf" "$OUT/mkwii_sections.bin" "$PKG_DIR/USRDIR/"
 cp "$SUPPORT/dsp_coef.bin" "$PKG_DIR/USRDIR/"
 cp -r "$SUPPORT/wii_bootstrap" "$PKG_DIR/USRDIR/"
 mkdir -p "$PKG_DIR/USRDIR/DATA"

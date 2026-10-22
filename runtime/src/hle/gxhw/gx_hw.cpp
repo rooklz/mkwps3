@@ -2,6 +2,7 @@
 
 #include "gx_hw.h"
 #include "gx_pipe.h"
+#include "gxf_shared.h"
 
 #include "guest_flat_memory.h"
 #include "hle_stubs.h"
@@ -26,6 +27,8 @@ extern "C" int mkw_lv2_thread_join(uint64_t id);
 extern "C" void mkw_lv2_thread_exit(void);
 extern "C" void mkw_rescue_register_thread(int gpu);
 extern "C" void mkw_hprof_attach(int which);
+extern "C" bool mkw_gxf_spu_start(GxfControl* ctl) __attribute__((weak));
+extern "C" const GxSink* mkw_renderer_shadow_sink(void) __attribute__((weak));
 
 namespace GxPipe {
 Cursor g_pipe;
@@ -102,6 +105,15 @@ std::atomic<bool> g_consumerWaiting{false};
 std::mutex g_wakeLock;
 std::condition_variable g_wake;
 
+// The SPU front end (gxf_shared.h): 0 parses here, 1 replays the SPU's records,
+// 2 parses here and checks the SPU's records against it (mkwii-gxf-verify.txt).
+int g_gxfMode = 0;
+alignas(128) GxfControl g_gxf;
+alignas(128) uint8_t g_gxfOut[512u << 10];
+uint32_t g_gxfTail = 0;          // bytes of records replayed, wrapping at 2^32
+uint64_t g_gxfPos = 0;           // the last ring position the SPU reported parsed
+const GxSink* g_gxfShadow = nullptr;
+
 // Producer-side state (game thread only).
 uint64_t g_lapBase = 0;          // absolute position of g_ring[0] in this lap
 uint8_t* g_ringCursor = nullptr; // saved while the pipe records a display list
@@ -133,6 +145,8 @@ void PublishRing(uint64_t position)
         return;
     g_bytesWritten.store(position, std::memory_order_relaxed);
     g_written.store(position, std::memory_order_release);
+    if (g_gxfMode)
+        g_gxf.written = position;   // after the release: the ring bytes are visible first
     WakeConsumer();
 }
 
@@ -647,6 +661,196 @@ void ServicePresent()
 extern "C" void mkw_prof_parse_begin(void) __attribute__((weak));
 extern "C" void mkw_prof_parse_end(void) __attribute__((weak));
 
+// Replays the SPU's records up to `head` into `sink`. The real run goes through LoadCp
+// and LoadBp, which raise the PE interrupts; a verify run's shadow sink only records.
+void ReplayRecords(uint32_t head, const GxSink* sink, bool real)
+{
+    constexpr uint32_t kOut = sizeof g_gxfOut;
+    while (g_gxfTail != head) {
+        const uint32_t off = g_gxfTail % kOut;
+        const uint32_t* w = reinterpret_cast<const uint32_t*>(g_gxfOut + off);
+        const uint32_t hdr = w[0];
+        uint32_t words = 1;
+        switch (hdr >> 24) {
+        case GXF_NOP:
+            break;
+        case GXF_WRAP:
+            g_gxfTail += kOut - off;
+            continue;
+        case GXF_CP:
+            if (real)
+                LoadCp(static_cast<uint8_t>(hdr), w[1]);
+            else
+                sink->load_cp(sink->ctx, static_cast<uint8_t>(hdr), w[1]);
+            words = 2;
+            break;
+        case GXF_XF: {
+            const unsigned count = ((hdr >> 16) & 0xF) + 1;
+            if (sink && sink->load_xf)
+                sink->load_xf(sink->ctx, static_cast<uint16_t>(hdr), w + 1, count);
+            words = 1 + count;
+            break;
+        }
+        case GXF_BP:
+            if (real)
+                LoadBp(w[1]);
+            else
+                sink->load_bp(sink->ctx, w[1]);
+            words = 2;
+            break;
+        case GXF_DRAW:
+            if (sink && sink->draw)
+                sink->draw(sink->ctx, static_cast<uint8_t>(hdr >> 8), hdr & 7, static_cast<uint16_t>(w[1]),
+                           GuestBytes(w[2]), w[3]);
+            if (real) {
+                ++g_draws;
+                g_vertices += w[1];
+            }
+            words = 4;
+            break;
+        case GXF_RUN:
+            if (sink && sink->draw_run)
+                sink->draw_run(sink->ctx, hdr & 7, GuestBytes(w[1]), w[2], w[3], w[4], w[5], w[6]);
+            if (real) {
+                g_draws += w[3];
+                g_vertices += w[4];
+            }
+            words = 7;
+            break;
+        case GXF_POS:
+            g_gxfPos = (static_cast<uint64_t>(w[1]) << 32) | w[2];
+            if (real) {
+                g_bytesParsed.store(g_gxfPos, std::memory_order_relaxed);
+                g_consumed.store(g_gxfPos, std::memory_order_release);
+            }
+            words = 3;
+            break;
+        case GXF_WRAPCOPY: {
+            // A FIFO draw across the ring's end: its head goes below the ring start,
+            // as the PPU parser does it, so the vertices read as one span.
+            const uint32_t head = hdr & 0x00FFFFFFu;
+            if (real && head <= kPreSlack)
+                std::memcpy(g_ring - head, g_ring + kRingBytes - head, head);
+            break;
+        }
+        case GXF_INDEX:
+            if (sink && sink->load_index)
+                sink->load_index(sink->ctx, static_cast<uint8_t>(hdr), static_cast<uint16_t>(w[1] >> 16),
+                                 static_cast<uint16_t>(w[1] & 0xFFF), static_cast<uint8_t>(w[2]));
+            words = 3;
+            break;
+        default: {
+            static unsigned reports;
+            if (reports++ < 8)
+                std::printf("[gxf] bad record %08x at %u\n", static_cast<unsigned>(hdr), static_cast<unsigned>(off));
+            break;
+        }
+        }
+        g_gxfTail += words * 4u;
+    }
+    g_gxf.out_tail = g_gxfTail;
+}
+
+inline uint32_t SpuHead()
+{
+    const uint32_t head = g_gxf.out_head;
+    std::atomic_thread_fence(std::memory_order_acquire);   // the records before the head that says they are there
+    return head;
+}
+
+void GxfStats()
+{
+    static uint64_t last;
+    const uint64_t now = Timebase();
+    if (now - last < 79800000ull * 10u)
+        return;
+    const double secs = last ? static_cast<double>(now - last) / 79800000.0 : 0.0;
+    static uint32_t lastBusy, lastStall;
+    const uint32_t busy = g_gxf.busy, stall = g_gxf.stall;
+    if (secs > 0.0)
+        std::printf("[gxf] kept %u dropped %u, indexed %u (%u fetched), lists %u, unknown %u; "
+                    "spu busy %.1f%% stalled %.1f%%\n",
+                    static_cast<unsigned>(g_gxf.kept), static_cast<unsigned>(g_gxf.dropped),
+                    static_cast<unsigned>(g_gxf.idx_loads), static_cast<unsigned>(g_gxf.idx_misses),
+                    static_cast<unsigned>(g_gxf.lists), static_cast<unsigned>(g_gxf.unknown),
+                    100.0 * (busy - lastBusy) / (secs * 79800000.0), 100.0 * (stall - lastStall) / (secs * 79800000.0));
+    lastBusy = busy;
+    lastStall = stall;
+    last = now;
+}
+
+// Verify run: replays the SPU's records into the shadow sink until they have reached
+// `consumed`, so the ring isn't released under the SPU. Gives up on a silent SPU.
+void VerifyDrain(uint64_t consumed)
+{
+    const uint64_t t0 = Timebase();
+    while (g_gxfMode == 2 && g_gxfPos < consumed) {
+        const uint32_t head = SpuHead();
+        if (head != g_gxfTail) {
+            ReplayRecords(head, g_gxfShadow, false);
+            continue;
+        }
+        if (Timebase() - t0 > 79800000ull * 2u) {
+            std::printf("[gxf] verify: the SPU stopped at %llu (want %llu); check off\n",
+                        static_cast<unsigned long long>(g_gxfPos), static_cast<unsigned long long>(consumed));
+            g_gxfMode = 0;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(10));
+    }
+    GxfStats();
+}
+
+void WaitForCommands(uint64_t seen)
+{
+    if (g_sink && g_sink->idle)
+        g_sink->idle(g_sink->ctx);
+    std::unique_lock<std::mutex> lock(g_wakeLock);
+    g_consumerWaiting.store(true, std::memory_order_release);
+    if (g_written.load(std::memory_order_acquire) == seen && g_run.load())
+        g_wake.wait_for(lock, std::chrono::milliseconds(2));
+    g_consumerWaiting.store(false, std::memory_order_release);
+}
+
+// The SPU parses; this thread replays its records. Returns if the SPU stops answering,
+// for the PPU parser to carry on from the last position it reported.
+void SpuFrontEnd()
+{
+    uint64_t stuckSince = 0;
+    while (g_run.load(std::memory_order_acquire)) {
+        ServicePresent();
+        const uint64_t seen = g_gxf.seen;
+        const uint32_t head = SpuHead();
+        if (head != g_gxfTail) {
+            const uint64_t t0 = Timebase();
+            mkw_prof_parse_begin();
+            ReplayRecords(head, g_sink, true);
+            mkw_prof_parse_end();
+            g_gpuBusyTicks += Timebase() - t0;
+            stuckSince = 0;
+            continue;
+        }
+        GxfStats();
+        const uint64_t written = g_written.load(std::memory_order_acquire);
+        if (seen == written) {
+            stuckSince = 0;
+            WaitForCommands(written);
+            continue;
+        }
+        // The SPU is behind the producer: it will have records shortly.
+        const uint64_t now = Timebase();
+        if (!stuckSince) {
+            stuckSince = now;
+        } else if (now - stuckSince > 79800000ull * 3u) {
+            std::printf("[gxf] the SPU parser stopped at %llu with %llu written; parsing on the PPU\n",
+                        static_cast<unsigned long long>(g_gxfPos), static_cast<unsigned long long>(written));
+            g_gxfMode = 0;
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(10));
+    }
+}
+
 void GpuThreadMain(void*)
 {
     MkwPinArenaOnThisThread();
@@ -654,18 +858,14 @@ void GpuThreadMain(void*)
     mkw_hprof_attach(0);
     if (g_sink && g_sink->start)
         g_sink->start(g_sink->ctx);
-    uint64_t consumed = 0;
+    if (g_gxfMode == 1)
+        SpuFrontEnd();
+    uint64_t consumed = g_consumed.load(std::memory_order_acquire);
     while (g_run.load(std::memory_order_acquire)) {
         ServicePresent();
         const uint64_t written = g_written.load(std::memory_order_acquire);
         if (written == consumed) {
-            if (g_sink && g_sink->idle)
-                g_sink->idle(g_sink->ctx);
-            std::unique_lock<std::mutex> lock(g_wakeLock);
-            g_consumerWaiting.store(true, std::memory_order_release);
-            if (g_written.load(std::memory_order_acquire) == consumed && g_run.load())
-                g_wake.wait_for(lock, std::chrono::milliseconds(2));
-            g_consumerWaiting.store(false, std::memory_order_release);
+            WaitForCommands(consumed);
             continue;
         }
 
@@ -691,6 +891,8 @@ void GpuThreadMain(void*)
             }
         }
         consumed += used;
+        if (g_gxfMode == 2)
+            VerifyDrain(consumed);
         g_bytesParsed.store(consumed, std::memory_order_relaxed);
         g_consumed.store(consumed, std::memory_order_release);
         mkw_prof_parse_end();
@@ -705,6 +907,42 @@ void GpuThreadMain(void*)
         }
     }
     mkw_lv2_thread_exit();
+}
+
+// Before the GPU thread starts: the SPU front end, if the flag files ask for it.
+void StartSpuFrontEnd()
+{
+    FILE* f = std::fopen("/dev_hdd0/tmp/mkwii-gxf-verify.txt", "rb");
+    int mode = f ? 2 : 0;
+    if (f)
+        std::fclose(f);
+    if (!mode && (f = std::fopen("/dev_hdd0/tmp/mkwii-gxfspu.txt", "rb"))) {
+        std::fclose(f);
+        mode = 1;
+    }
+    if (!mode || !mkw_gxf_spu_start)
+        return;
+    if (mode == 2 && !(mkw_renderer_shadow_sink && (g_gxfShadow = mkw_renderer_shadow_sink())))
+        return;
+    std::memset(&g_gxf, 0, sizeof g_gxf);
+    g_gxf.ring_ea = reinterpret_cast<uintptr_t>(g_ring);
+    g_gxf.arena_ea = reinterpret_cast<uintptr_t>(MkwGuestArenaBase());
+    g_gxf.out_ea = reinterpret_cast<uintptr_t>(g_gxfOut);
+    g_gxf.ppe_ea = reinterpret_cast<uintptr_t>(&g_gxf.written);
+    g_gxf.spu_ea = reinterpret_cast<uintptr_t>(&g_gxf.seen);
+    g_gxf.ring_bytes = kRingBytes;
+    g_gxf.ring_guest = static_cast<uint32_t>(g_ring - MkwGuestArenaBase()) | 0x80000000u;
+    g_gxf.out_bytes = sizeof g_gxfOut;
+    g_gxf.written = g_written.load();
+    if (g_gxf.written != 0) {
+        std::printf("[gxf] commands already written; parsing on the PPU\n");
+        return;
+    }
+    if (mkw_gxf_spu_start(&g_gxf)) {
+        g_gxfMode = mode;
+        if (mode == 2)
+            std::printf("[gxf] verify run: the PPU renders, the SPU's records are checked against it\n");
+    }
 }
 
 bool g_initialized = false;
@@ -745,6 +983,12 @@ void RunGuestHandler(CpuContext* cpu, uint32_t interrupt)
 } // namespace
 
 // ---------------------------------------------------------------------------
+
+// Whether the SPU front end has an SPU (the vertex decoder takes one fewer).
+extern "C" int mkw_gxf_spu_mode(void)
+{
+    return g_gxfMode;
+}
 
 void SetSink(const GxSink* sink)
 {
@@ -788,6 +1032,7 @@ void Initialize()
     // The GPU thread hosts the whole renderer: give it a real stack and the
     // game thread's priority, so each owns one of the PPE's two hardware
     // threads.
+    StartSpuFrontEnd();
     g_run.store(true);
     if (mkw_lv2_thread_create(&g_gpuThread, GpuThreadMain, nullptr, 1000, 1u << 20, "mkw_gpu") != 0) {
         std::printf("[gx] GPU thread creation failed\n");
@@ -802,6 +1047,7 @@ void Shutdown()
     if (!g_initialized)
         return;
     g_run.store(false);
+    g_gxf.quit = 1;
     {
         std::lock_guard<std::mutex> lock(g_wakeLock);
         g_wake.notify_one();

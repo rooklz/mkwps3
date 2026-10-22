@@ -65,6 +65,7 @@ LV2_SRCS   := $(REPO)/platform/ps3/compat_lv2.cpp \
               $(REPO)/platform/ps3/guest_flat_memory_ps3.cpp \
               $(REPO)/platform/ps3/audio_backend_ps3.cpp \
               $(REPO)/platform/ps3/ax_spu_ps3.cpp \
+              $(REPO)/platform/ps3/gxf_spu_ps3.cpp \
               $(REPO)/platform/ps3/hprof_ps3.cpp
 PLAT_SRCS  := $(REPO)/platform/ps3/main_ps3.cpp \
               $(REPO)/platform/ps3/pad_ps3.cpp \
@@ -100,6 +101,7 @@ BLOB_OBJ   := $(OUT)/obj/data_sections_blobs.o
 ALL_OBJS := $(RT_OBJS) $(LV2_OBJS) $(PLAT_OBJS) $(ASM_OBJS) $(REN_OBJS) $(SHARD_OBJS) $(GEN_OBJS)
 SPU_ELF  := $(OUT)/vtx_spu.elf
 AX_SPU_ELF := $(OUT)/ax_spu.elf
+GXF_SPU_ELF := $(OUT)/gxf_spu.elf
 AX_SPU_OPT ?= -O3 -funroll-loops
 
 LIBS := -L$(PS3DEV)/ppu/lib -lrsx -lgcm_sys -lio -laudio -lnet -lsysutil -lsysmodule -lsysfs -lrt -llv2dbg -llv2 -lm -lstdc++
@@ -109,8 +111,8 @@ comma := ,
 # ---- rules -------------------------------------------------------------------
 
 .PHONY: all runtime
-all: $(TARGET).self $(SPU_ELF) $(AX_SPU_ELF)
-runtime: $(RT_OBJS) $(LV2_OBJS) $(PLAT_OBJS) $(ASM_OBJS) $(REN_OBJS) $(SPU_ELF) $(AX_SPU_ELF)
+all: $(TARGET).self $(SPU_ELF) $(AX_SPU_ELF) $(GXF_SPU_ELF)
+runtime: $(RT_OBJS) $(LV2_OBJS) $(PLAT_OBJS) $(ASM_OBJS) $(REN_OBJS) $(SPU_ELF) $(AX_SPU_ELF) $(GXF_SPU_ELF)
 
 DEPFLAGS = -MMD -MP
 
@@ -166,6 +168,12 @@ $(AX_SPU_ELF): $(REPO)/platform/ps3/spu/ax_spu.c $(REPO)/platform/ps3/spu/ax_spu
 	@mkdir -p $(dir $@)
 	@echo "  SPU  $(notdir $<)"
 	@$(SPU_CC) $(SPU_CFLAGS) $(AX_SPU_OPT) -I$(REPO)/runtime/src/hle/audio -o $@ $< -Wl,--gc-sections -L$(PS3DEV)/spu/lib -lsputhread
+
+# The GX command parser on an SPU (platform/ps3/gxf_spu_ps3.cpp loads it).
+$(GXF_SPU_ELF): $(REPO)/platform/ps3/spu/gxf_spu.c $(REPO)/runtime/src/hle/gxhw/gxf_shared.h
+	@mkdir -p $(dir $@)
+	@echo "  SPU  $(notdir $<)"
+	@$(SPU_CC) $(SPU_CFLAGS) -O3 -I$(REPO)/runtime/src/hle/gxhw -o $@ $< -Wl,--gc-sections -L$(PS3DEV)/spu/lib -lsputhread
 
 $(SHARD_OBJS): $(OUT)/obj/%.o: /%
 	@mkdir -p $(dir $@)
