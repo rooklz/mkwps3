@@ -106,7 +106,7 @@ std::mutex g_wakeLock;
 std::condition_variable g_wake;
 
 // The SPU front end (gxf_shared.h): 0 parses here, 1 replays the SPU's records,
-// 2 parses here and checks the SPU's records against it (mkwii-gxf-verify.txt).
+// 2 parses here and checks the SPU's records against it.
 int g_gxfMode = 0;
 alignas(128) GxfControl g_gxf;
 alignas(128) uint8_t g_gxfOut[512u << 10];
@@ -909,16 +909,18 @@ void GpuThreadMain(void*)
     mkw_lv2_thread_exit();
 }
 
-// Before the GPU thread starts: the SPU front end, if the flag files ask for it.
+// Before the GPU thread starts: the SPU front end, unless mkwii-nogxfspu.txt keeps the
+// parse here; mkwii-gxf-verify.txt makes it a verify run.
 void StartSpuFrontEnd()
 {
     FILE* f = std::fopen("/dev_hdd0/tmp/mkwii-gxf-verify.txt", "rb");
-    int mode = f ? 2 : 0;
+    int mode = f ? 2 : 1;
     if (f)
         std::fclose(f);
-    if (!mode && (f = std::fopen("/dev_hdd0/tmp/mkwii-gxfspu.txt", "rb"))) {
+    if (mode == 1 && (f = std::fopen("/dev_hdd0/tmp/mkwii-nogxfspu.txt", "rb"))) {
         std::fclose(f);
-        mode = 1;
+        std::printf("[gxf] mkwii-nogxfspu.txt present: parsing on the PPU\n");
+        mode = 0;
     }
     if (!mode || !mkw_gxf_spu_start)
         return;
