@@ -7,12 +7,32 @@
 
 namespace BigEndian {
 
+// A big-endian host (the PS3) reads and writes guest bytes as they are: one
+// load or store, and a float straight to or from an FPR. Through an integer
+// register, a float costs the PPE a load-hit-store each way, and GCC takes
+// that route for a memcpy'd float, so the PPU gets lfs and stfs spelt out.
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+inline constexpr bool kHostIsBigEndian = true;
+#else
+inline constexpr bool kHostIsBigEndian = false;
+#endif
+
 inline uint16_t Read16(const uint8_t* src) {
+    if constexpr (kHostIsBigEndian) {
+        uint16_t value;
+        std::memcpy(&value, src, sizeof(value));
+        return value;
+    }
     return (static_cast<uint16_t>(src[0]) << 8) |
            static_cast<uint16_t>(src[1]);
 }
 
 inline uint32_t Read32(const uint8_t* src) {
+    if constexpr (kHostIsBigEndian) {
+        uint32_t value;
+        std::memcpy(&value, src, sizeof(value));
+        return value;
+    }
     return (static_cast<uint32_t>(src[0]) << 24) |
            (static_cast<uint32_t>(src[1]) << 16) |
            (static_cast<uint32_t>(src[2]) << 8) |
@@ -20,19 +40,36 @@ inline uint32_t Read32(const uint8_t* src) {
 }
 
 inline float ReadFloat32(const uint8_t* src) {
-    const uint32_t bits = Read32(src);
     float value = 0.0f;
+#if defined(__PPU__)
+    // An lfs of its own: GCC moves a memcpy'd float through a GPR and the stack.
+    __asm__("lfs%U1%X1 %0,%1" : "=f"(value) : "m"(*reinterpret_cast<const float*>(src)));
+    return value;
+#endif
+    if constexpr (kHostIsBigEndian) {
+        std::memcpy(&value, src, sizeof(value));
+        return value;
+    }
+    const uint32_t bits = Read32(src);
     static_assert(sizeof(bits) == sizeof(value));
     std::memcpy(&value, &bits, sizeof(value));
     return value;
 }
 
 inline void Write16(uint8_t* dst, uint16_t value) {
+    if constexpr (kHostIsBigEndian) {
+        std::memcpy(dst, &value, sizeof(value));
+        return;
+    }
     dst[0] = static_cast<uint8_t>(value >> 8);
     dst[1] = static_cast<uint8_t>(value);
 }
 
 inline void Write32(uint8_t* dst, uint32_t value) {
+    if constexpr (kHostIsBigEndian) {
+        std::memcpy(dst, &value, sizeof(value));
+        return;
+    }
     dst[0] = static_cast<uint8_t>(value >> 24);
     dst[1] = static_cast<uint8_t>(value >> 16);
     dst[2] = static_cast<uint8_t>(value >> 8);
@@ -45,6 +82,14 @@ inline void Write64(uint8_t* dst, uint64_t value) {
 }
 
 inline void WriteFloat32(uint8_t* dst, float value) {
+#if defined(__PPU__)
+    __asm__("stfs%U0%X0 %1,%0" : "=m"(*reinterpret_cast<float*>(dst)) : "f"(value));
+    return;
+#endif
+    if constexpr (kHostIsBigEndian) {
+        std::memcpy(dst, &value, sizeof(value));
+        return;
+    }
     uint32_t bits = 0;
     static_assert(sizeof(bits) == sizeof(value));
     std::memcpy(&bits, &value, sizeof(bits));
