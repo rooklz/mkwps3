@@ -3,6 +3,10 @@
 // bus sample, every PB byte written back and the voice count have to match. The SPU program
 // itself runs here, its DMA turned into checked copies (stub/spu_mfcio.h).
 //
+// Built twice: ax_spu_test runs the scalar kernels, ax_spu_vector_test (AXS_VECTOR_STUB) the
+// SPU's vector ones through stub/spu_intrinsics.h, with each vector call also checked against
+// the scalar loop on the spot (AX_SPU_CHECK_VECTOR).
+//
 //   make -C tests/audio ax_spu_test && tests/audio/ax_spu_test
 #include "ax_voice.h"
 
@@ -251,6 +255,9 @@ int main()
         job.pb_addr = spanBegin;
         job.seq = static_cast<uint32_t>(scenario + 1);
         job.flags = (newFilter ? AX_SPU_NEW_FILTER : 0u) | (fit32 ? AX_SPU_COEFFS_FIT32 : 0u);
+#if defined(AXS_VECTOR_STUB)
+        job.flags |= AX_SPU_CHECK_VECTOR;
+#endif
         job.nseg = static_cast<uint32_t>(nseg);
         for (size_t i = 0; i < nseg; ++i) {
             job.seg[i][0] = static_cast<uint16_t>(segments[i].guestOffset);
@@ -261,7 +268,7 @@ int main()
         voices += refVoices;
         pbsTotal += posted.pbs;
 
-        bool bad = posted.seq != job.seq || posted.voices != refVoices;
+        bool bad = posted.seq != job.seq || posted.voices != refVoices || posted.vector_mismatches != 0;
         if (std::memcmp(&refBus, &spuBus, sizeof refBus) != 0)
             bad = true;
         if (std::memcmp(refAfter.data(), span, spanBytes) != 0)
@@ -269,6 +276,8 @@ int main()
         if (bad && ++failures <= 5) {
             std::printf("scenario %d: layout %d newFilter %d fit32 %d coeffs %d, voices %u/%u\n", scenario,
                         static_cast<int>(layout), newFilter, fit32, coeffs != nullptr, posted.voices, refVoices);
+            if (posted.vector_mismatches)
+                std::printf("  %u vector kernel calls differed from the scalar loop\n", posted.vector_mismatches);
             for (size_t i = 0; i < 12 * 96; ++i)
                 if ((&refBus.regular[0][0])[i] != (&spuBus.regular[0][0])[i]) {
                     std::printf("  first bus difference: bus %zu sample %zu: %d vs %d\n", i / 96, i % 96,

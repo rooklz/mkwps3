@@ -100,6 +100,7 @@ BLOB_OBJ   := $(OUT)/obj/data_sections_blobs.o
 ALL_OBJS := $(RT_OBJS) $(LV2_OBJS) $(PLAT_OBJS) $(ASM_OBJS) $(REN_OBJS) $(SHARD_OBJS) $(GEN_OBJS)
 SPU_ELF  := $(OUT)/vtx_spu.elf
 AX_SPU_ELF := $(OUT)/ax_spu.elf
+AX_SPU_OPT ?= -O3 -funroll-loops
 
 LIBS := -L$(PS3DEV)/ppu/lib -lrsx -lgcm_sys -lio -laudio -lnet -lsysutil -lsysmodule -lsysfs -lrt -llv2dbg -llv2 -lm -lstdc++
 
@@ -164,7 +165,7 @@ $(AX_SPU_ELF): $(REPO)/platform/ps3/spu/ax_spu.c $(REPO)/platform/ps3/spu/ax_spu
                $(REPO)/runtime/src/hle/audio/ax_spu_core.h
 	@mkdir -p $(dir $@)
 	@echo "  SPU  $(notdir $<)"
-	@$(SPU_CC) $(SPU_CFLAGS) -I$(REPO)/runtime/src/hle/audio -o $@ $< -Wl,--gc-sections -L$(PS3DEV)/spu/lib -lsputhread
+	@$(SPU_CC) $(SPU_CFLAGS) $(AX_SPU_OPT) -I$(REPO)/runtime/src/hle/audio -o $@ $< -Wl,--gc-sections -L$(PS3DEV)/spu/lib -lsputhread
 
 $(SHARD_OBJS): $(OUT)/obj/%.o: /%
 	@mkdir -p $(dir $@)
