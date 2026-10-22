@@ -53,6 +53,8 @@ extern volatile uint32_t* g_guestExecAddr;
 extern volatile uint32_t* g_guestEntries;
 extern volatile uint64_t* g_guestInstructions;
 extern "C" void mkw_mix_ticks(uint64_t* work, uint64_t* join, uint64_t* voices, uint64_t* spu);
+extern "C" uint64_t g_audioPollTicks, g_reverbTicks;
+extern "C" uint32_t g_reverbCalls, g_reverbFallbacks;
 extern "C" void mkw_mix_spu_waits(uint64_t* pb, uint64_t* samples);
 extern "C" void mkw_rescue_set_app_dir(const char* dir);
 std::atomic<bool> g_fatalReported{false};
@@ -190,6 +192,18 @@ void ReportStats()
             std::printf("mix %.2f ms (wait %.2f, spu %.2f: pb %.2f samples %.2f), %.0f voices/frame; ",
                         ms(work - lastWork), ms(join - lastJoin), ms(spu - lastSpu), ms(pb - lastPb),
                         ms(smp - lastSmp), static_cast<double>(voices - lastVoices) / n);
+            // The audio pump runs in the scheduler's idle loop, so the busy figure above
+            // leaves it out; the reverb is part of it.
+            static uint64_t lastPoll = 0, lastReverb = 0;
+            static uint32_t lastReverbCalls = 0, lastFallbacks = 0;
+            std::printf("audio pump %.2f ms (reverb %.2f in %.1f calls, %u translated); ",
+                        ms(g_audioPollTicks - lastPoll), ms(g_reverbTicks - lastReverb),
+                        static_cast<double>(g_reverbCalls - lastReverbCalls) / n,
+                        g_reverbFallbacks - lastFallbacks);
+            lastPoll = g_audioPollTicks;
+            lastReverb = g_reverbTicks;
+            lastReverbCalls = g_reverbCalls;
+            lastFallbacks = g_reverbFallbacks;
         }
         lastWork = work;
         lastJoin = join;

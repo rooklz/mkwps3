@@ -239,7 +239,11 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
                 // event.  Poll it from the guest scheduler instead of batching
                 // completed 3 ms DMA blocks at VI retrace cadence.  A completed
                 // block wakes SoundThread and sets the scheduler pending mask.
+                // Not idle while pumping audio, so the guest profiler sees the
+                // guest callbacks it runs (busy time is counted separately).
+                g_mkwGuestIdle = 0;
                 Audio_HLE_Poll(cpu);
+                g_mkwGuestIdle = 1;
                 if (::Memory::Read32(kSchedulerPendingFlagAddr) != 0) {
                     break;
                 }

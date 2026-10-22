@@ -116,6 +116,16 @@ DEPFLAGS = -MMD -MP
 ifeq ($(MKW_HPROF),1)
 $(OUT)/obj$(REPO)/runtime/src/hle/gxhw/gx_hw.cpp.o: CXXFLAGS_RT += $(HPROF_FLAGS)
 endif
+# MKW_HPROF_RT=1 as well: the runtime's HLE (OS, audio, VI, DVD, input) too, so
+# a game-thread profile shows where its native time goes.
+ifeq ($(MKW_HPROF_RT),1)
+HPROF_RT_FILES := abi_bridge.cpp ppc_helpers.cpp memory.cpp fiber_manager.cpp fpu_helpers.cpp \
+    $(patsubst %,hle/os/%,$(notdir $(wildcard $(REPO)/runtime/src/hle/os/*.cpp))) \
+    hle/audio/audio.cpp hle/audio/ax_effects.cpp hle/audio/ax_memory.cpp hle/audio/ax_mix.cpp \
+    hle/vi.cpp hle/storage/dvd.cpp hle/msl_runtime.cpp hle/egg_decomp.cpp hle/task_thread.cpp \
+    hle/input/kpad.cpp hle/input/pad.cpp hle/input/wpad.cpp
+$(patsubst %,$(OUT)/obj$(REPO)/runtime/src/%.o,$(HPROF_RT_FILES)): CXXFLAGS_RT += $(HPROF_FLAGS)
+endif
 
 $(RT_OBJS): $(OUT)/obj/%.o: /%
 	@mkdir -p $(dir $@)
