@@ -569,7 +569,9 @@ public static class GuestAbiContractAnalyzer
             case IrIndirectCall value:
                 AddValue(ref result, value.Target);
                 foreach (var argument in value.Arguments) AddValue(ref result, argument);
-                result = result.Union(GuestEabiVisibility.TrustFences ? EabiCallReads : FullState);
+                result = result.Union(!GuestEabiVisibility.TrustFences ? FullState
+                    : GuestEabiVisibility.NarrowsIndirectReads ? EabiIndirectCallReads
+                    : EabiCallReads);
                 break;
             case IrIndirectJump value:
                 AddValue(ref result, value.Target);
@@ -742,6 +744,12 @@ public static class GuestAbiContractAnalyzer
     // registers and that global state, and leaves the nonvolatiles as they were.
     private static RegisterSet EabiCallReads =>
         new(GuestEabiVisibility.CallReadGpr, GuestEabiVisibility.CallReadFpr, byte.MaxValue,
+            false, false, false, true, byte.MaxValue, byte.MaxValue);
+
+    // The same call reached through a pointer: arguments and base registers only
+    // (GuestEabiVisibility.NarrowsIndirectReads).
+    private static RegisterSet EabiIndirectCallReads =>
+        new(GuestEabiVisibility.IndirectCallReadGpr, GuestEabiVisibility.IndirectCallReadFpr, byte.MaxValue,
             false, false, false, true, byte.MaxValue, byte.MaxValue);
 
     private static RegisterSet EabiCallWrites =>

@@ -48,6 +48,15 @@ public static class GuestEabiVisibility
     public const uint CallReadGpr = 0xFFFFFFFEu;
     public const uint CallReadFpr = 0xFFFFC1FEu;     // f1-f8, f14-f31
 
+    // What an EABI function reached through a pointer consumes as data: its arguments and the base
+    // registers (r1, r2, r13; r11/r12 for the pointer-to-member thunk). It may save a nonvolatile, but
+    // its caller keeps its own copy across the call (PreserveNonvolatile), so a value it saves and
+    // restores from the context is never observed. Counting r14-r31/f14-f31 as read here made every
+    // function with a bctrl, and every caller up the graph, claim them, so those callers flushed
+    // their nonvolatiles before each call.
+    public const uint IndirectCallReadGpr = 0x00003FFEu;  // r1-r13
+    public const uint IndirectCallReadFpr = 0x000001FEu;  // f1-f8
+
     // What it can leave changed: the volatile registers, results included.
     public const uint CallWriteGpr = 0x00001FF9u;    // r0, r3-r12
     public const uint CallWriteFpr = 0x00003FFFu;    // f0-f13
@@ -61,6 +70,15 @@ public static class GuestEabiVisibility
 
     public static readonly bool TrustFences =
         Enabled && Environment.GetEnvironmentVariable("MKW_EABI_FENCES") != "0";
+
+    /// <summary>
+    /// An indirect call reads only <see cref="IndirectCallReadGpr"/>/<see cref="IndirectCallReadFpr"/>
+    /// in its caller's contract (<c>MKW_EABI_INDIRECT_READS=0</c> keeps every nonvolatile). The call
+    /// site still publishes everything that changed, so the context stays as complete as before for
+    /// whatever the target does.
+    /// </summary>
+    public static readonly bool NarrowsIndirectReads =
+        PreserveNonvolatile && TrustFences && Environment.GetEnvironmentVariable("MKW_EABI_INDIRECT_READS") != "0";
 
     /// <summary>
     /// A narrowed body publishes CR fields 2-4 and no XER at its return, so flags it leaves in the others
