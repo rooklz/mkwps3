@@ -210,23 +210,37 @@ static u32 s_bound_epoch, s_shader_epoch = 1;
 
 void rsx_shader_new_frame(void) { s_shader_epoch++; }
 
+static void load_vertex_program(gcmContextData *ctx, const RsxVertProgram *vp);
+static void load_fragment_program(gcmContextData *ctx, const RsxFragProgram *fp);
+
 void rsx_bind_programs(const RsxVertProgram *vp, const RsxFragProgram *fp)
 {
     gcmContextData *ctx = rsx_context();
-    rsxVertexProgram   vph;
-    rsxFragmentProgram fph;
 
     if (!ctx || !vp->valid || !fp->valid)
         return;
 
     /* By serial, not by address: an evicted cache slot is rebuilt in place,
      * and comparing addresses skipped loading the new program into it -- the
-     * draw ran with whatever program the slot held before. */
-    if (vp->serial == s_bound_vp && fp->serial == s_bound_fp &&
-        s_bound_epoch == s_shader_epoch)
-        return;                     /* already the live pair this frame */
-    s_bound_vp = vp->serial; s_bound_fp = fp->serial;
+     * draw ran with whatever program the slot held before. Each program is
+     * loaded only when it is the one that changed: most changes are a new
+     * fragment program under the same vertex program (an animated material
+     * colour), and loading a vertex program copies all of it into the ring. */
+    const int fresh = s_bound_epoch != s_shader_epoch;
     s_bound_epoch = s_shader_epoch;
+    if (fresh || vp->serial != s_bound_vp) {
+        s_bound_vp = vp->serial;
+        load_vertex_program(ctx, vp);
+    }
+    if (fresh || fp->serial != s_bound_fp) {
+        s_bound_fp = fp->serial;
+        load_fragment_program(ctx, fp);
+    }
+}
+
+static void load_vertex_program(gcmContextData *ctx, const RsxVertProgram *vp)
+{
+    rsxVertexProgram vph;
 
     memset(&vph, 0, sizeof vph);
     vph.num_insn    = (u16)vp->instructions;
@@ -243,6 +257,11 @@ void rsx_bind_programs(const RsxVertProgram *vp, const RsxFragProgram *fp)
     vph.const_start = 0;
     vph.insn_start  = 0;
     rsxLoadVertexProgram(ctx, &vph, vp->ucode);
+}
+
+static void load_fragment_program(gcmContextData *ctx, const RsxFragProgram *fp)
+{
+    rsxFragmentProgram fph;
 
     memset(&fph, 0, sizeof fph);
     fph.num_insn = (u16)(fp->words / 4);
