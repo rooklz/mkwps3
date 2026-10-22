@@ -73,6 +73,28 @@ MKW_KNOWN_LEAF_NATIVE_R3(0x80021478u, MSL__cvt_fp2unsigned_80021478, cpu->fpr[1]
 
 #undef MKW_KNOWN_LEAF_NATIVE_R3
 
+// Leaf natives with no result: the game's memory and matrix routines (hle/native).
+#define MKW_KNOWN_LEAF_NATIVE_VOID(addr, fn, ...) \
+template <> struct KnownTypedNativeCpuCall<addr> { \
+    static constexpr bool kAvailable = true; \
+    static constexpr bool kLeaf = true; \
+    static void Invoke(CpuContext* cpu) { (void)cpu; fn(__VA_ARGS__); } \
+}
+
+void MSL_memcpy_HLE(uint32_t dst, uint32_t src, uint32_t n);
+void MSL_fill_mem_HLE(uint32_t dst, uint32_t value, uint32_t n);
+void MSL_memset_HLE(uint32_t dst, uint32_t value, uint32_t n);
+void PSMTXConcat_HLE(uint32_t a, uint32_t b, uint32_t ab);
+void PSMTXMultVec_HLE(uint32_t m, uint32_t src, uint32_t dst);
+
+MKW_KNOWN_LEAF_NATIVE_VOID(0x80005F34u, MSL_memcpy_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
+MKW_KNOWN_LEAF_NATIVE_VOID(0x80005F84u, MSL_fill_mem_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
+MKW_KNOWN_LEAF_NATIVE_VOID(0x80006038u, MSL_memset_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
+MKW_KNOWN_LEAF_NATIVE_VOID(0x80199D64u, PSMTXConcat_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
+MKW_KNOWN_LEAF_NATIVE_VOID(0x8019A91Cu, PSMTXMultVec_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
+
+#undef MKW_KNOWN_LEAF_NATIVE_VOID
+
 MKW_KNOWN_TYPED_NATIVE(0x8016D3A4u, GX__SetVtxDesc_8016d3a4, cpu->gpr[3], cpu->gpr[4]);
 MKW_KNOWN_TYPED_NATIVE(0x8016DC34u, GX__ClearVtxDesc_8016dc34);
 MKW_KNOWN_TYPED_NATIVE(0x8016DC68u, GX__SetVtxAttrFmt_8016dc68, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5], cpu->gpr[6], cpu->gpr[7]);
