@@ -123,8 +123,26 @@ static int bp_affects_program(u8 reg, u32 oldv, u32 newv)
     return 0;
 }
 
+/* Titles re-send whole state blocks per material: in a Mario Kart Wii race
+ * about 78% of XF loads and 60% of BP writes leave every register as it was.
+ * Such a write changes nothing, so it is dropped before it bumps a generation,
+ * which would otherwise send the shader lookup back to rehashing and the
+ * constant caches back to uploading what the RSX already has. */
+static int xf_unchanged(const GXState *g, u16 addr, const u32 *values, unsigned count)
+{
+    unsigned i;
+    for (i = 0; i < count; i++) {
+        const u16 a = (u16)(addr + i);
+        if (a >= XF_MEM_SIZE || g->xf.mem[a] != values[i])
+            return 0;
+    }
+    return 1;
+}
+
 void gx_state_load_xf(GXState *g, u16 addr, const u32 *values, unsigned count)
 {
+    if (xf_unchanged(g, addr, values, count))
+        return;
     g_xf_generation++;
     unsigned i;
     int prog = 0;
@@ -159,8 +177,28 @@ void gx_state_load_xf(GXState *g, u16 addr, const u32 *values, unsigned count)
  * the lookup can tell "nothing has changed" in two compares. */
 u32 g_bp_generation;
 
+/* BP writes that act rather than set state: the pixel engine's finish and
+ * tokens, the EFB copy, the TLUT load, cache invalidations, and the mask
+ * that applies to the next write. Everything else only records a value. */
+static int bp_write_acts(u8 reg)
+{
+    return reg == BP_SET_DRAWDONE || reg == BP_PE_TOKEN || reg == BP_PE_TOKEN_INT ||
+           reg == BP_TRIGGER_EFB_COPY || (reg >= 0x64u && reg <= 0x68u) || reg == BP_BP_MASK;
+}
+
 void gx_state_load_bp(GXState *g, u8 reg, u32 value)
 {
+    {   /* The value the write would leave, with a pending mask applied as
+         * bp_write applies it (not to the TEV colour registers). */
+        const u32 mask = g->bp.raw[BP_BP_MASK];
+        u32 v = value & 0x00FFFFFFu;
+        if (mask != 0x00FFFFFFu && (reg < 0xE0u || reg > 0xE7u))
+            v = (g->bp.raw[reg] & ~mask) | (v & mask);
+        if (v == g->bp.raw[reg] && !bp_write_acts(reg)) {
+            g->bp.raw[BP_BP_MASK] = 0x00FFFFFFu;   /* the mask is spent either way */
+            return;
+        }
+    }
     g_bp_generation++;
     {
         u32 masked = value & 0x00FFFFFFu;
@@ -204,7 +242,6 @@ void gx_state_draw_run(GXState *g, unsigned vat, u32 cmd_addr, u32 cmd_bytes,
 
 void gx_state_load_index(GXState *g, u8 which, u16 index, u16 xf_addr, u8 count)
 {
-    g_xf_generation++;
     const GXCPRegs *cp = &g->parser.cp;
     unsigned array;
     u32 src;
@@ -234,6 +271,16 @@ void gx_state_load_index(GXState *g, u8 which, u16 index, u16 xf_addr, u8 count)
      * a skinned model loads a 12-word matrix this way per bone per draw. */
     host = (mem_valid_span(src) >= (u32)count * 4u) ? (const u8 *)mem_ptr(src)
                                                     : NULL;
+    {
+        u32 words[16];
+        if (count <= 16u) {
+            for (i = 0; i < count; i++)
+                words[i] = host ? dol_be32(host + i * 4u) : mem_read32(src + i * 4u);
+            if (xf_unchanged(g, xf_addr, words, count))
+                return;
+        }
+    }
+    g_xf_generation++;
 
     for (i = 0; i < count; i++) {
         u16 a = (u16)(xf_addr + i);
