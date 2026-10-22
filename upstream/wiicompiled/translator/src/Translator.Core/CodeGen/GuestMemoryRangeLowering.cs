@@ -15,6 +15,14 @@ namespace Translator.Core.CodeGen;
 /// </summary>
 public static class GuestMemoryRangeLowering
 {
+    /// <summary>
+    /// Off unless <c>MKW_RANGE_LOWERING=1</c>. A resolved range saves per-access checks, but on the
+    /// flat arena a plain access has none to save: it is one fold shared by every access through the
+    /// base, then the load or store. The range only adds its own resolution, a null test per access,
+    /// and a cold fallback call per access that grows the body around the hot path.
+    /// </summary>
+    public static bool Enabled => Environment.GetEnvironmentVariable("MKW_RANGE_LOWERING") == "1";
+
     private const int MaxRangeLength = 4096;
 
     // Hardware register window (gather pipe, CP/PE/PI registers, EFB aperture below 0xCE000000).

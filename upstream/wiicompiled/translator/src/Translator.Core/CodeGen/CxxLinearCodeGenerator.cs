@@ -133,9 +133,12 @@ public sealed partial class CxxLinearCodeGenerator
         // Call-free proven kernels amortize very small ranges. Ordinary functions
         // use the epoch-safe scalar form and a higher threshold to avoid adding
         // pointer locals for incidental field pairs.
-        func = GuestMemoryRangeLowering.Lower(
-            func, minimumAccesses: hasProvenKernelEntry ? 2 : 8, ignoreDisabledPcTraces: true,
-            scalarOnly: !hasProvenKernelEntry);
+        if (GuestMemoryRangeLowering.Enabled)
+        {
+            func = GuestMemoryRangeLowering.Lower(
+                func, minimumAccesses: hasProvenKernelEntry ? 2 : 8, ignoreDisabledPcTraces: true,
+                scalarOnly: !hasProvenKernelEntry);
+        }
         var architecturalFunc = func;
         var architecturalContract = GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts);
         var guestAbiContract = MarkAddressOf(func) is { } contractAddress
