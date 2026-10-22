@@ -959,12 +959,13 @@ Stats GetStats()
 
 namespace GxPipe {
 
-void Overflow()
+uint8_t* Overflow()
 {
     if (GxHw::g_recording)
         GxHw::StageOverflow();
     else
         GxHw::RingOverflow();
+    return g_pipe.cursor;
 }
 
 void WriteLong(const uint8_t* data, uint32_t bytes)
