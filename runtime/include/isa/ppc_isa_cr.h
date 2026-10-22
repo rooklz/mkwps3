@@ -13,9 +13,22 @@ inline void SetCRResident(uint32_t& cr, uint32_t xer, int field, uint32_t a, uin
     const int shift = (7 - field) * 4;
     cr = (cr & ~(0xFu << shift)) | (value << shift);
 }
-inline void SetCRFloatResident(uint32_t& cr, int field, double a, double b) noexcept {
-    uint32_t value = (std::isnan(a) || std::isnan(b)) ? 0x1u :
+// The LT/GT/EQ/UN field fcmpu gives for a and b. On the PPE that is the one
+// instruction and a read of its field; spelt out, GCC makes it a compare per
+// relation (and one per NaN test) with a branch after each.
+inline uint32_t PpcFloatCompareField(double a, double b) noexcept {
+#if defined(__PPU__) || defined(__powerpc__) || defined(__powerpc64__)
+    uint32_t field;
+    __asm__("fcmpu 7,%1,%2\n\tmfocrf %0,1" : "=r"(field) : "f"(a), "f"(b) : "cr7");
+    return field & 0xFu;
+#else
+    return (std::isnan(a) || std::isnan(b)) ? 0x1u :
         ((a < b ? 0x8u : 0u) | (a > b ? 0x4u : 0u) | (a == b ? 0x2u : 0u));
+#endif
+}
+
+inline void SetCRFloatResident(uint32_t& cr, int field, double a, double b) noexcept {
+    const uint32_t value = PpcFloatCompareField(a, b);
     const int shift = (7 - field) * 4;
     cr = (cr & ~(0xFu << shift)) | (value << shift);
 }
