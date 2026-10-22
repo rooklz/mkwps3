@@ -1690,8 +1690,15 @@ static u32           s_arena_capacity;
  * and the race's working set is several hundred of them. */
 /* Set-associative: a race uses a few hundred distinct programs, and with one
  * slot per hash two of them sharing a slot evicted each other every frame --
- * 175k program builds in a few minutes of racing, ~10 ms a frame. */
-#define SHADER_CACHE_SIZE 4096
+ * 175k program builds in a few minutes of racing, ~10 ms a frame.
+ *
+ * Vertex and fragment programs are cached apart. The vertex program follows
+ * the XF state and the fragment program the TEV state, and a race changes the
+ * second far more often: every animated material colour is a new fragment
+ * program. Kept as pairs, each of those rebuilt the vertex program too, and
+ * the pairs multiplied until 4096 slots thrashed (~10 builds a frame). */
+#define VP_CACHE_SIZE 1024
+#define FP_CACHE_SIZE 4096
 #define SHADER_CACHE_WAYS 8
 /* Sized for the longest program the generators can now emit, not for the
  * longest one the title screen needs. A menu's vertex program is nine
@@ -1715,16 +1722,49 @@ typedef struct {
     u32  last_use;              /* shader_lookup_clock at the last hit */
     u64  key;
     RsxVertProgram vp;
-    RsxFragProgram fp;
     u32 *vp_code;               /* exactly the program's words (malloc) */
     /* What the generated vertex program reads out of the constant file. The
      * uploads below are driven from this rather than from the live state, so a
      * program and its constants can never disagree about, say, whether a
      * post-transform matrix is in play. */
     XFProgramInfo xinfo;
+} VpEntry;
+
+typedef struct {
+    int  used;
+    u32  last_use;
+    u64  key;
+    RsxFragProgram fp;
+} FpEntry;
+
+/* What a draw binds. Valid until the next lookup. */
+typedef struct {
+    const RsxVertProgram *vp;
+    const RsxFragProgram *fp;
+    const XFProgramInfo  *xinfo;
 } ShaderEntry;
 
-static ShaderEntry s_cache[SHADER_CACHE_SIZE];
+static VpEntry s_vcache[VP_CACHE_SIZE];
+static FpEntry s_fcache[FP_CACHE_SIZE];
+
+static void shader_caches_clear(void)
+{
+    unsigned i;
+    for (i = 0; i < FP_CACHE_SIZE; i++)
+        if (s_fcache[i].used) rsx_fp_destroy(&s_fcache[i].fp);
+    for (i = 0; i < VP_CACHE_SIZE; i++)
+        free(s_vcache[i].vp_code);
+    memset(s_vcache, 0, sizeof s_vcache);
+    memset(s_fcache, 0, sizeof s_fcache);
+}
+
+static unsigned shader_entries_used(void)
+{
+    unsigned i, n = 0;
+    for (i = 0; i < FP_CACHE_SIZE; i++)
+        if (s_fcache[i].used) n++;
+    return n;
+}
 
 
 /* One-line renderer statistics for the on-screen overlay. Deltas between
@@ -1773,8 +1813,7 @@ void gx_render_sample_caches(void)
             tex++;
             bytes += s_texcache[i].pitch * s_texcache[i].height;
         }
-    for (i = 0; i < SHADER_CACHE_SIZE; i++)
-        if (s_cache[i].used) shd++;
+    shd = shader_entries_used();
     g_gx_render.texture_entries   = tex;
     g_gx_render.program_entries   = shd;
     g_gx_render.texture_bytes_live = bytes;
@@ -1786,9 +1825,7 @@ char *gx_render_stats_line(char *buf, unsigned len)
     for (i = 0; i < TEXCACHE_SLOTS; i++)
         if (s_texcache[i].valid) tex++;
     {
-        unsigned shd = 0, k;
-        for (k = 0; k < SHADER_CACHE_SIZE; k++)
-            if (s_cache[k].used) shd++;
+        unsigned shd = shader_entries_used();
         unsigned efb = 0, m;
         for (m = 0; m < EFB_COPY_TARGETS; m++) {
             EfbCopyTarget *ct = efb_copy_entry(m);
@@ -1797,7 +1834,7 @@ char *gx_render_stats_line(char *buf, unsigned len)
         snprintf(buf, len,
                  "TEX %u/%u  SHD %u/%u  DRAW %u  RTT %u/%u %llu/%llu  GEN!%llu",
                  tex, (unsigned)TEXCACHE_SLOTS,
-                 shd, (unsigned)SHADER_CACHE_SIZE,
+                 shd, (unsigned)FP_CACHE_SIZE,
                  (unsigned)g_gx_render.draws,
                  efb, (unsigned)EFB_COPY_TARGETS,
                  (unsigned long long)g_gx_render.efb_copies_resolved,
@@ -1818,7 +1855,8 @@ char *gx_render_stats_line(char *buf, unsigned len)
 int gx_render_init(void)
 {
     memset(&g_gx_render, 0, sizeof g_gx_render);
-    memset(s_cache, 0, sizeof s_cache);
+    memset(s_vcache, 0, sizeof s_vcache);
+    memset(s_fcache, 0, sizeof s_fcache);
     memset(s_efb_surf, 0, sizeof s_efb_surf);
     efb_copy_reset();
 
@@ -1873,12 +1911,7 @@ int gx_render_init(void)
 void gx_render_shutdown(void)
 {
     unsigned i;
-    for (i = 0; i < SHADER_CACHE_SIZE; i++) {
-        if (s_cache[i].used)
-            rsx_fp_destroy(&s_cache[i].fp);
-        free(s_cache[i].vp_code);
-    }
-    memset(s_cache, 0, sizeof s_cache);
+    shader_caches_clear();
     tex_quarantine_reap(s_tex_frame, 1);
     for (i = 0; i < TEXCACHE_SLOTS; i++) {
         if (s_texcache[i].pixels) {
@@ -2240,26 +2273,136 @@ static ShaderEntry *shaders_for_state(const GXState *g)
     return e;
 }
 
+/* The way a set-associative lookup picks its slot: the entry already holding
+ * `key`, else the free or least recently used way. */
+#define SHADER_SET_LOOKUP(cache, size, key, clock, found, victim)                 \
+    do {                                                                       \
+        unsigned w_;                                                           \
+        typeof(&(cache)[0]) set_ = &(cache)[(unsigned)((key) %                  \
+            ((size) / SHADER_CACHE_WAYS)) * SHADER_CACHE_WAYS];                \
+        (found) = NULL;                                                        \
+        (victim) = &set_[0];                                                   \
+        for (w_ = 0; w_ < SHADER_CACHE_WAYS; w_++) {                           \
+            if (set_[w_].used && set_[w_].key == (key)) {                      \
+                set_[w_].last_use = (clock);                                   \
+                (found) = &set_[w_];                                           \
+                break;                                                         \
+            }                                                                  \
+            if (!set_[w_].used ||                                              \
+                ((victim)->used && set_[w_].last_use < (victim)->last_use))    \
+                (victim) = &set_[w_];                                          \
+        }                                                                      \
+    } while (0)
+
+static VpEntry *vertex_program_for_state(const GXState *g, u32 clock)
+{
+    static u32 vp_code[VP_WORDS_MAX];
+    const u64 key = xf_state_hash(g);
+    VpEntry *e, *victim;
+    VPEmitter ve;
+    XFProgramInfo xinfo;
+    u64 t0, t1;
+
+    SHADER_SET_LOOKUP(s_vcache, VP_CACHE_SIZE, key, clock, e, victim);
+    if (e)
+        return e;
+
+    if (g_prof.depth == 0 || g_prof.stack[g_prof.depth] != PH_SHGEN)
+        prof_enter(PH_SHGEN);
+    t0 = prof_tb();
+    e = victim;
+    free(e->vp_code);       /* uploaded through the ring at bind: nothing
+                             * queued still reads this copy */
+    memset(e, 0, sizeof *e);
+    vp_init(&ve, vp_code, VP_WORDS_MAX);
+    if (xf_generate(g, &ve, &xinfo) != 0 || ve.overflow || xinfo.truncated) {
+        /* Counted, not only logged: a program that does not fit means the
+         * draw is skipped, and a missing object with a warning buried in a
+         * log the console cannot show is indistinguishable from geometry
+         * that was never submitted. */
+        g_gx_render.programs_failed++;
+        LOG_WARN(LOG_VIDEO, "gx_render: vertex program generation failed");
+        return NULL;
+    }
+    e->vp_code = (u32 *)malloc(ve.used * sizeof(u32));
+    if (!e->vp_code)
+        return NULL;
+    memcpy(e->vp_code, vp_code, ve.used * sizeof(u32));
+    rsx_vp_create(&e->vp, e->vp_code, ve.used, ve.used / 4,
+                  ve.input_mask, ve.output_mask);
+    e->xinfo = xinfo;
+    e->key = key;
+    e->last_use = clock;
+    e->used = 1;
+    t1 = prof_tb();
+    g_sg_ticks[1] += t1 - t0;                /* vertex program */
+    g_sg_count++;
+    g_gx_render.programs_built++;
+    return e;
+}
+
+static FpEntry *fragment_program_for_state(const GXState *g, u32 clock)
+{
+    static u32 fp_code[FP_WORDS_MAX];
+    const u64 key = tev_state_hash(&g->bp);
+    FpEntry *e, *victim;
+    FPEmitter fe;
+    TevProgramInfo tinfo;
+    u64 t0, t1, t2;
+
+    SHADER_SET_LOOKUP(s_fcache, FP_CACHE_SIZE, key, clock, e, victim);
+    if (e)
+        return e;
+
+    if (g_prof.depth == 0 || g_prof.stack[g_prof.depth] != PH_SHGEN)
+        prof_enter(PH_SHGEN);
+    t0 = prof_tb();
+    e = victim;
+    if (e->used)
+        rsx_fp_destroy(&e->fp);
+    memset(e, 0, sizeof *e);
+    t1 = prof_tb();
+    g_sg_ticks[0] += t1 - t0;                /* evict */
+    fp_init(&fe, fp_code, FP_WORDS_MAX);
+    if (tev_generate(&g->bp, &fe, &tinfo) != 0 || fe.overflow ||
+        tinfo.truncated) {
+        g_gx_render.programs_failed++;
+        LOG_WARN(LOG_VIDEO, "gx_render: fragment program generation failed");
+        return NULL;
+    }
+    t2 = prof_tb();
+    g_sg_ticks[2] += t2 - t1;                /* fragment program */
+    /* Every coordinate the generated TEV program reads is declared -- an
+     * undeclared coordinate interpolates only its first two components,
+     * which is how the fog coordinate would arrive frozen. */
+    if (rsx_fp_create(&e->fp, fp_code, fe.used, tinfo.temps_used,
+                      tev_texcoord_mask(&g->bp)) != 0)
+        return NULL;
+    g_sg_ticks[3] += prof_tb() - t2;         /* upload */
+    e->key = key;
+    e->last_use = clock;
+    e->used = 1;
+    g_sg_count++;
+    g_gx_render.programs_built++;
+    return e;
+}
+
 static ShaderEntry *shaders_for_state_impl(const GXState *g)
 {
-    ShaderEntry *e;
-    u64 e_key;
-    u32 e_clock;
+    static ShaderEntry pair;
+    static int pair_valid;
+    static u32 s_clock;
+    VpEntry *v;
+    FpEntry *f;
     /* Matrix loads bump g_xf_generation on every draw. The program itself
      * changes far less often; g_prog_generation tracks only that. */
     extern u32 g_prog_generation;
     static u32 last_prog;
-    static ShaderEntry *last_e;
 
     if (g_shader_flush_req) {
-        unsigned fi;
         g_shader_flush_req = 0;
-        for (fi = 0; fi < SHADER_CACHE_SIZE; fi++) {
-            if (s_cache[fi].used) rsx_fp_destroy(&s_cache[fi].fp);
-            free(s_cache[fi].vp_code);
-        }
-        memset(s_cache, 0, sizeof s_cache);
-        last_e = NULL;
+        shader_caches_clear();
+        pair_valid = 0;
         LOG_INFO(LOG_CORE, "shader cache flushed by request");
     }
     /* A run of draws that share a material is one compare. Texture changes
@@ -2268,103 +2411,29 @@ static ShaderEntry *shaders_for_state_impl(const GXState *g)
     {
         extern unsigned g_tev_intensity_maps;
         static unsigned last_imaps;
-        if (last_e && last_prog == g_prog_generation &&
+        if (pair_valid && last_prog == g_prog_generation &&
             last_imaps == g_tev_intensity_maps) {
             g_gx_render.program_hits++;
-            return last_e;
+            return &pair;
         }
         last_prog = g_prog_generation;
         last_imaps = g_tev_intensity_maps;
-        last_e = NULL;
+        pair_valid = 0;
     }
 
-    {
-        static u32 s_clock;
-        const u64 key = xf_state_hash(g) ^ (tev_state_hash(&g->bp) * 0x9E3779B97F4A7C15ull);
-        ShaderEntry *set = &s_cache[(unsigned)(key % (SHADER_CACHE_SIZE / SHADER_CACHE_WAYS)) *
-                                    SHADER_CACHE_WAYS];
-        ShaderEntry *victim = &set[0];
-        unsigned w;
-        s_clock++;
-        for (w = 0; w < SHADER_CACHE_WAYS; w++) {
-            if (set[w].used && set[w].key == key) {
-                g_gx_render.program_hits++;
-                set[w].last_use = s_clock;
-                last_e = &set[w];
-                return &set[w];
-            }
-            if (!set[w].used || (victim->used && set[w].last_use < victim->last_use))
-                victim = &set[w];
-        }
-        e = victim;
-        e_key = key;
-        e_clock = s_clock;
-    }
-
-    prof_enter(PH_SHGEN);
-    u64 sg_t0 = prof_tb();
-    if (e->used)
-        rsx_fp_destroy(&e->fp);
-    free(e->vp_code);       /* uploaded through the ring at bind: nothing
-                             * queued still reads this copy */
-    memset(e, 0, sizeof *e);
-
-    {
-        VPEmitter ve;
-        FPEmitter fe;
-        XFProgramInfo xinfo;
-        TevProgramInfo tinfo;
-        static u32 fp_code[FP_WORDS_MAX];
-        static u32 vp_code[VP_WORDS_MAX];
-
-        u64 sg_t1 = prof_tb();
-        g_sg_ticks[0] += sg_t1 - sg_t0;          /* evict */
-        vp_init(&ve, vp_code, VP_WORDS_MAX);
-        if (xf_generate(g, &ve, &xinfo) != 0 || ve.overflow || xinfo.truncated) {
-            /* Counted, not only logged: a program that does not fit means the
-             * draw is skipped, and a missing object with a warning buried in a
-             * log the console cannot show is indistinguishable from geometry
-             * that was never submitted. */
-            g_gx_render.programs_failed++;
-            LOG_WARN(LOG_VIDEO, "gx_render: vertex program generation failed");
-            return NULL;
-        }
-
-        u64 sg_t2 = prof_tb();
-        g_sg_ticks[1] += sg_t2 - sg_t1;          /* vertex program */
-        fp_init(&fe, fp_code, FP_WORDS_MAX);
-        if (tev_generate(&g->bp, &fe, &tinfo) != 0 || fe.overflow ||
-            tinfo.truncated) {
-            g_gx_render.programs_failed++;
-            LOG_WARN(LOG_VIDEO, "gx_render: fragment program generation failed");
-            return NULL;
-        }
-
-        u64 sg_t3 = prof_tb();
-        g_sg_ticks[2] += sg_t3 - sg_t2;          /* fragment program */
-        e->vp_code = (u32 *)malloc(ve.used * sizeof(u32));
-        if (!e->vp_code)
-            return NULL;
-        memcpy(e->vp_code, vp_code, ve.used * sizeof(u32));
-        rsx_vp_create(&e->vp, e->vp_code, ve.used, ve.used / 4,
-                      ve.input_mask, ve.output_mask);
-        e->xinfo = xinfo;
-        /* Every coordinate the generated TEV program reads is declared -- an
-         * undeclared coordinate interpolates only its first two components,
-         * which is how the fog coordinate would arrive frozen. */
-        if (rsx_fp_create(&e->fp, fp_code, fe.used, tinfo.temps_used,
-                          tev_texcoord_mask(&g->bp)) != 0)
-            return NULL;
-        g_sg_ticks[3] += prof_tb() - sg_t3;      /* upload */
-        g_sg_count++;
-    }
-
-    e->key  = e_key;
-    e->last_use = e_clock;
-    e->used = 1;
-    g_gx_render.programs_built++;
-    last_e = e;
-    return e;
+    s_clock++;
+    v = vertex_program_for_state(g, s_clock);
+    if (!v)
+        return NULL;
+    f = fragment_program_for_state(g, s_clock);
+    if (!f)
+        return NULL;
+    g_gx_render.program_hits++;
+    pair.vp = &v->vp;
+    pair.fp = &f->fp;
+    pair.xinfo = &v->xinfo;
+    pair_valid = 1;
+    return &pair;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3878,7 +3947,7 @@ decode_done:
     g_gx_render.vertices += vertex_count;
 
     prof_enter(PH_CMD);                 /* PHASE PROFILE */
-    rsx_bind_programs(&sh->vp, &sh->fp);
+    rsx_bind_programs(sh->vp, sh->fp);
     prof_exit();
 
     /* PHASE PROFILE: transform maths.  The three rsx_vp_constants uploads in
@@ -3911,7 +3980,7 @@ decode_done:
         union { u32 u; f32 f; } cv;
 
         if (g_xf_mirror) {
-            xfm_upload_draw(g, posmtx_idx, texmtx_idx, sh->xinfo.texgens,
+            xfm_upload_draw(g, posmtx_idx, texmtx_idx, sh->xinfo->texgens,
                             data_addr);
             /* With the texgen group switched off (a debug mask), programs
              * still read the fixed texture-matrix slots: fall through. */
@@ -3934,7 +4003,7 @@ decode_done:
                    (texmtx_idx[2]<<16) | (texmtx_idx[3]<<24);
             k2v[3]=texmtx_idx[4] | (texmtx_idx[5]<<8) |
                    (texmtx_idx[6]<<16) | (texmtx_idx[7]<<24);
-            k2v[4]=sh->xinfo.texgens | ((u32)sh->xinfo.uses_posmtx<<8);
+            k2v[4]=sh->xinfo->texgens | ((u32)sh->xinfo->uses_posmtx<<8);
             k2v[5]=g->xf.mem[0x101A]; /* viewport z scale raw */
             k2v[6]=g->xf.mem[0x101D]; /* viewport z offset raw */
             k2v[7]=0;
@@ -3989,7 +4058,7 @@ decode_done:
             rsx_vpc_rows(XF_CONST_PROJ, 4, c0, c1, c2, c3);
 
             /* Texture-coordinate matrices: same story as the position matrix. */
-            for (r2 = 0; r2 < sh->xinfo.texgens && r2 < GX_NUM_TEXCOORD; r2++) {
+            for (r2 = 0; r2 < sh->xinfo->texgens && r2 < GX_NUM_TEXCOORD; r2++) {
                 u32 info_tg = g->xf.mem[0x1040 + r2];
                 unsigned srcrow_tg = (info_tg >> 7) & 0x1Fu;
                 if (posmtx_idx == 0xFFu && (srcrow_tg == 0 || srcrow_tg == 1) &&
@@ -4009,7 +4078,7 @@ decode_done:
 
             /* The model-view matrix on its own, and the normal matrix, for
              * programs that light or generate from the normal. */
-            if (sh->xinfo.uses_posmtx) {
+            if (sh->xinfo->uses_posmtx) {
                 rsx_vpc_rows(XF_CONST_POSMTX, 3, m0, m1, m2, zero);
                 if (posmtx_idx == 0xFFu) {
                     rsx_vpc_rows(XF_CONST_NRMMTX, 3, m0, m1, m2, zero);
@@ -4045,9 +4114,9 @@ decode_done:
             static u32 lk3[4]; static int lk3_valid;
             u32 k3[4];
             k3[0] = (g_xf_light_generation * 0x9E3779B1u) ^ g_xf_post_generation ^ (s_const_epoch << 16);
-            k3[1] = sh->xinfo.lights_used;
-            k3[2] = sh->xinfo.uses_channels;
-            k3[3] = sh->xinfo.post_used;
+            k3[1] = sh->xinfo->lights_used;
+            k3[2] = sh->xinfo->uses_channels;
+            k3[3] = sh->xinfo->post_used;
             if (lk3_valid && memcmp(k3, lk3, sizeof lk3) == 0)
                 goto lights_done;
             memcpy(lk3, k3, sizeof lk3); lk3_valid = 1;
@@ -4055,13 +4124,13 @@ decode_done:
 
         /* Post-transform ("dual") matrices, for the texgens that select one.
          * Three rows of four out of the post-matrix memory at 0x0500. */
-        if (sh->xinfo.post_used && !g_xf_mirror) {   /* mirror: XFM_POST */
+        if (sh->xinfo->post_used && !g_xf_mirror) {   /* mirror: XFM_POST */
             unsigned n2;
             for (n2 = 0; n2 < RENDER_VERTEX_TEXCOORDS; n2++) {
                 f32 Q[12];
                 unsigned idx, rr, cc4;
                 const u32 *praw;
-                if (!(sh->xinfo.post_used & (1u << n2)))
+                if (!(sh->xinfo->post_used & (1u << n2)))
                     continue;
                 idx = g->xf.mem[0x1050 + n2] & 0x3Fu;
                 praw = &g->xf.mem[0x0500u + idx * 4u];
@@ -4075,17 +4144,17 @@ decode_done:
         }
 
         /* Lights, for the ones the generated program actually reads. */
-        if (sh->xinfo.lights_used) {
+        if (sh->xinfo->lights_used) {
             unsigned li;
             for (li = 0; li < 8; li++) {
                 f32 L[20];
-                if (!(sh->xinfo.lights_used & (1u << li)))
+                if (!(sh->xinfo->lights_used & (1u << li)))
                     continue;
                 xf_light_constants(&g->xf, li, L);
                 rsx_vp_constants(XF_CONST_LIGHT(li), 5, L);
             }
         }
-        if (sh->xinfo.uses_channels) {
+        if (sh->xinfo->uses_channels) {
             f32 MC[8], AC[8];
             xf_material_constants(&g->xf, MC, AC);
             rsx_vp_constants(XF_CONST_MATERIAL(0), 2, MC);
@@ -4106,7 +4175,7 @@ decode_done:
                 one_epoch = s_const_epoch + 1u;
             }
         }
-        if (sh->xinfo.fog) {
+        if (sh->xinfo->fog) {
             f32 F[4];
             xf_fog_constants(&g->bp, F);
             rsx_vp_constants(XF_CONST_FOG, 1, F);
