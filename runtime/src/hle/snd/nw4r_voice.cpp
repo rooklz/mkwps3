@@ -15,6 +15,10 @@
 // /dev_hdd0/tmp/mkwii-snd-difftest.txt also runs the translated function on the
 // same input (on a private context and stack) and logs any output that differs.
 
+// Runs on the guest thread, where r14 holds the arena base: read it from there
+// rather than calling out for it on every access.
+#define MKW_PIN_ARENA 1
+
 #include "RuntimeConfig.h"
 #include "guest_flat_memory.h"
 #include "hle_stubs.h"
@@ -33,7 +37,7 @@ constexpr uint32_t kAxManager = 0x802D5730u;     // AxManager::GetInstance(); ou
 
 inline const uint8_t* G(uint32_t address)
 {
-    return MkwGuestArenaBase() + (address & GuestFlat::kFoldMask);
+    return g_mkwGuestArena + (address & GuestFlat::kFoldMask);
 }
 
 inline double F(uint32_t address) { return *reinterpret_cast<const float*>(G(address)); }
@@ -42,7 +46,7 @@ inline double K(int offset) { return F(kSda2 + static_cast<uint32_t>(offset)); }
 
 inline void Store16(uint32_t address, uint32_t value)
 {
-    *reinterpret_cast<uint16_t*>(MkwGuestArenaBase() + (address & GuestFlat::kFoldMask)) =
+    *reinterpret_cast<uint16_t*>(g_mkwGuestArena + (address & GuestFlat::kFoldMask)) =
         static_cast<uint16_t>(value);
 }
 
