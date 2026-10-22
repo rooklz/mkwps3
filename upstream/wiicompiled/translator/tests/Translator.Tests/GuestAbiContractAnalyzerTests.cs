@@ -99,6 +99,24 @@ public sealed class GuestAbiContractAnalyzerTests
     }
 
     [Fact]
+    public void IndirectCallReadsArgumentsAndBaseRegistersOnly()
+    {
+        var function = new IrFunction("pointer_call", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrIndirectCall("lr", IrValue.Register("r12"), Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+
+        var contract = GuestAbiContractAnalyzer.Analyze(function);
+
+        Assert.Equal(GuestEabiVisibility.IndirectCallReadGpr, contract.GprReadBeforeWriteMask);
+        Assert.Equal(GuestEabiVisibility.IndirectCallReadFpr, contract.FprReadBeforeWriteMask);
+    }
+
+    [Fact]
     public void TracksSpecialRegistersEmbeddedInRawBranchConditions()
     {
         var function = new IrFunction("raw_branch", "entry", new[]
