@@ -8,6 +8,9 @@
 # move when the code does.
 #
 # Prints fps, and game-thread and GPU-thread milliseconds per race frame.
+# PCS=<secs> (PCS_TOP=<n>), GPROF=1 and HPROF=<gpu|game> also take a profile
+# inside the measured stretch; see each below. A profile costs the run a little
+# speed, so time a build without one.
 . "$(dirname "$0")/local.env" 2>/dev/null || true
 cd "$(dirname "$0")/.."
 FRAMES=${1:-2400}
@@ -64,7 +67,11 @@ mark_at() {
 }
 a=$(mark_at "$START") || { echo "the race never reached frame $START"; exit 1; }
 # PCS=<seconds>: also take a guest profile inside the measured stretch.
-[ -n "$PCS" ] && tools/ps3-pcs.sh "$PCS" 60 > "${TMPDIR:-/tmp}/bench-pcs.txt" 2>&1
+[ -n "$PCS" ] && tools/ps3-pcs.sh "$PCS" "${PCS_TOP:-60}" > "${TMPDIR:-/tmp}/bench-pcs.txt" 2>&1
+# GPROF=1: also the renderer's phase profile (control port `prof`) over the stretch.
+[ -n "$GPROF" ] && ctl prof >/dev/null
+# HPROF=<gpu|game> on a measurement build: also a native profile of that thread.
+[ -n "$HPROF" ] && tools/ps3-hprof.sh "$HPROF" "${HPROF_SECS:-10}" "${HPROF_TOP:-60}" > "${TMPDIR:-/tmp}/bench-hprof.txt" 2>&1
 # SEGMENT=<frames>: also report each stretch of that many frames.
 marks=$a
 f=$START
@@ -89,4 +96,5 @@ if len(rows) > 2:
         show(a, b, "  ")
 show(rows[0], rows[-1], "")
 '
+[ -n "$GPROF" ] && ctl prof > "${TMPDIR:-/tmp}/bench-gprof.txt"
 tools/ps3-shot.sh "${TMPDIR:-/tmp}/bench-gp.png" >/dev/null 2>&1

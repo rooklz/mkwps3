@@ -99,6 +99,8 @@ void* CreateFiber(size_t stackSize, LPFIBER_START_ROUTINE start, void* parameter
     return f;
 }
 
+extern "C" void mkw_hprof_fiber_switch(void* fiber);
+
 void SwitchToFiber(void* fiber)
 {
     PsFiber* to = static_cast<PsFiber*>(fiber);
@@ -106,6 +108,7 @@ void SwitchToFiber(void* fiber)
     if (!to || to == from)
         return;
     g_current = to;
+    mkw_hprof_fiber_switch(to);
     fiber_swap(&from->ctx, &to->ctx);
 }
 

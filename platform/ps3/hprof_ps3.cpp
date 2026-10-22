@@ -27,6 +27,17 @@ struct Stack {
 Stack g_stacks[2];                  // 0: GPU thread, 1: game thread
 __thread Stack* t_stack = nullptr;
 
+// The game thread runs every guest thread as a fiber, and a fiber switches away
+// from inside instrumented functions whose exits then come on another fiber's
+// stack. So each fiber gets its own shadow stack, swapped in by SwitchToFiber,
+// and the sampler follows whichever is current. Only once a hook has run: a
+// normal build never pays for the lookup.
+constexpr unsigned kFiberStacks = 64;
+Stack g_fiberStacks[kFiberStacks];
+void* g_fiberOwners[kFiberStacks];
+Stack* volatile g_gameCurrent = &g_stacks[1];
+volatile bool g_hooked = false;
+
 } // namespace
 
 extern "C" {
@@ -41,6 +52,7 @@ void __cyg_profile_func_enter(void* fn, void*)
     Stack* s = t_stack;
     if (!s)
         return;
+    g_hooked = true;
     const unsigned d = s->depth;
     if (d < kDepth)
         s->fn[d] = fn;
@@ -54,6 +66,29 @@ void __cyg_profile_func_exit(void*, void*)
         s->depth = s->depth - 1;
 }
 
+void mkw_hprof_fiber_switch(void* fiber) __attribute__((no_instrument_function));
+
+void mkw_hprof_fiber_switch(void* fiber)
+{
+    if (!g_hooked || t_stack == nullptr || t_stack == &g_stacks[0])
+        return;
+    unsigned free = kFiberStacks;
+    for (unsigned i = 0; i < kFiberStacks; ++i) {
+        if (g_fiberOwners[i] == fiber) {
+            t_stack = &g_fiberStacks[i];
+            g_gameCurrent = t_stack;
+            return;
+        }
+        if (!g_fiberOwners[i] && free == kFiberStacks)
+            free = i;
+    }
+    if (free == kFiberStacks)
+        return;
+    g_fiberOwners[free] = fiber;
+    t_stack = &g_fiberStacks[free];
+    g_gameCurrent = t_stack;
+}
+
 // Called on the thread to be profiled.
 void mkw_hprof_attach(int which)
 {
@@ -61,19 +96,21 @@ void mkw_hprof_attach(int which)
         t_stack = &g_stacks[which];
 }
 
-// Samples thread `which` every ~100 us for `ms` and writes pairs of 32-bit
-// words: the innermost function and its caller (0 when outside any
-// instrumented function). Returns the number of samples.
+// Samples thread `which` (on the game thread, its current fiber) every ~100 us
+// for `ms` and writes pairs of 32-bit words: the innermost function and its
+// caller (0 when outside any instrumented function). Returns the number of
+// samples.
 int mkw_hprof_sample(int which, unsigned ms, const char* path)
 {
     if (which != 0 && which != 1)
         return -1;
     static uint32_t buf[2 * 200000];
-    const Stack& s = g_stacks[which];
     unsigned n = 0;
     const unsigned want = ms * 10u;
     for (unsigned i = 0; i < want && n + 2 <= sizeof buf / sizeof buf[0]; ++i) {
         usleep(97);
+        // The game thread's current fiber, read afresh: it changes under us.
+        const Stack& s = which == 1 ? *const_cast<Stack*>(g_gameCurrent) : g_stacks[which];
         const unsigned d = s.depth;
         uint32_t top = 0, caller = 0;
         if (d > 0 && d <= kDepth) {

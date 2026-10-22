@@ -3,6 +3,7 @@
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "audio_backend.h"
+#include "gx_hw.h"
 #include "ax_dsp.h"
 #include "music_attenuation.h"
 #include "runtime_log.h"
@@ -519,10 +520,17 @@ int64_t ConsumeAudioPollDeltaMicros()
 
 } // namespace
 
+// Time base ticks spent pumping audio from the scheduler's idle loop, including the
+// guest callbacks it runs: the stats line reports it, since the game thread's busy
+// figure counts it as idle.
+extern "C" { uint64_t g_audioPollTicks = 0; }
+
 void Audio_HLE_Poll(CpuContext* ctx)
 {
+    const uint64_t start = GxHw::HostTicks();
     MusicAttenuation::TickGuest();
     Audio_HLE_Tick(ctx, static_cast<uint32_t>(ConsumeAudioPollDeltaMicros()));
+    g_audioPollTicks += GxHw::HostTicks() - start;
 }
 
 void Audio_HLE_PollDeferred()

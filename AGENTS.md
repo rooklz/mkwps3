@@ -55,7 +55,7 @@ Everything is driven remotely (setup in [docs/BUILDING.md](docs/BUILDING.md#the-
 | `ps3-shot.sh [file]` | Screenshot of the next frame |
 | `ps3-pad.sh` | Presses buttons on a virtual controller |
 | `ps3-pcs.sh` | Profiles the translated game code by function (exact attribution needs a build translated with `MKW_CALL_MARKS=1`, call stacks `MKW_GUEST_STACKS=1` as well) |
-| `ps3-hprof.sh <gpu\|game>` | Profiles the renderer and FIFO parser by function (needs a `MKW_HPROF=1` build) |
+| `ps3-hprof.sh <gpu\|game>` | Profiles the renderer and FIFO parser by function (needs a `MKW_HPROF=1` build; add `MKW_HPROF_RT=1` for the runtime's HLE on the game thread) |
 | `ps3-slow.sh [secs]` | Which guest functions take the memory slow paths, by name |
 | `ps3-recover.sh` | Hard-reboots the console through webMAN when the RSX has locked up |
 

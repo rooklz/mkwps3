@@ -1,4 +1,5 @@
 #include "abi_bridge.h"
+#include "gx_hw.h"
 #include "isa/big_endian.h"
 #include "hle_stubs.h"
 #include "memory.h"
@@ -368,10 +369,26 @@ void Render(uint32_t stateAddr, Frame& frame) {
 } // namespace ReverbStd
 } // namespace
 
+// Time base ticks spent in the reverb, the frames it rendered natively and the
+// ones it left to the translated guest code, for the stats line.
+extern "C" {
+uint64_t g_reverbTicks = 0;
+uint32_t g_reverbCalls = 0;
+uint32_t g_reverbFallbacks = 0;
+}
+
+namespace {
+struct ReverbTimer {
+    const uint64_t start = GxHw::HostTicks();
+    ~ReverbTimer() { g_reverbTicks += GxHw::HostTicks() - start; }
+};
+} // namespace
+
 extern "C" void AXFXReverbStdExpCallback_8012b830(CpuContext* ctx) {
     if (!ctx) {
         return;
     }
+    ReverbTimer timer;
 
     const uint32_t buffersAddr = ctx->gpr[3];
     const uint32_t stateAddr = ctx->gpr[4];
@@ -380,6 +397,7 @@ extern "C" void AXFXReverbStdExpCallback_8012b830(CpuContext* ctx) {
     try {
         flags = Memory::Read32(stateAddr + ReverbStd::kFieldFlags);
     } catch (const Memory::AccessViolation&) {
+        ++g_reverbFallbacks;
         func_8012B830(ctx);
         return;
     }
@@ -398,10 +416,12 @@ extern "C" void AXFXReverbStdExpCallback_8012b830(CpuContext* ctx) {
         built = false;
     }
     if (!built) {
+        ++g_reverbFallbacks;
         func_8012B830(ctx);
         return;
     }
 
+    ++g_reverbCalls;
     ReverbStd::Render(stateAddr, frame);
 }
 

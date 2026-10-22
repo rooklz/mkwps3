@@ -6,7 +6,8 @@
 #   PS3_OUT=$GEN/build/ps3-hprof tools/deploy-ps3.sh
 #
 # Translated game code isn't instrumented: on the game thread its time shows as
-# "(translated code)"; tools/ps3-pcs.sh profiles that side.
+# "(translated code)"; tools/ps3-pcs.sh profiles that side. Add MKW_HPROF_RT=1
+# to the build to see into the runtime's HLE (audio, OS, VI) on the game thread.
 . "$(dirname "$0")/local.env" 2>/dev/null || true
 WHICH=${1:-gpu}
 SECS=${2:-5}
