@@ -18,11 +18,16 @@ static EfbCopyTarget s_targets[EFB_COPY_TARGETS];
 
 /* efb_copy_find runs on every texture bind -- thousands a frame -- and the
  * table is 96 entries, so the answer is memoised per address. A target only
- * becomes valid (or moves) through efb_copy_note, which bumps the generation
- * and so retires every cached answer; invalidation elsewhere can only turn a
- * hit into a miss, and a cached hit is re-checked before it is used. */
+ * becomes valid, moves or changes size through efb_copy_note, which then bumps
+ * the generation and so retires every cached answer; invalidation elsewhere
+ * can only turn a hit into a miss, and a cached hit is re-checked before it is
+ * used. A copy into a target already at that address and size changes no
+ * answer, and most copies are exactly that (bloom, shadows and Mii heads are
+ * re-copied into the same buffers every frame), so it leaves the cache alone
+ * and bumps only the note generation, for what binds the copy's surface. */
 #define FIND_CACHE_N 256u
 static u32 s_find_gen = 1;
+static u32 s_note_gen = 1;
 static struct { u32 addr, gen; int idx; } s_find_cache[FIND_CACHE_N];
 static u32           s_serial;
 
@@ -199,7 +204,9 @@ EfbCopyTarget *efb_copy_note(const BPCopy *c)
         g_efb_copy.evictions++;
     }
 
-    s_find_gen++;
+    if (!e->valid || e->addr != c->dest_addr || e->bytes != bytes)
+        s_find_gen++;
+    s_note_gen++;
 
     /* Everything is overwritten unconditionally, including the geometry: the
      * backend compares its surface against the new size and grows it if the
@@ -228,6 +235,8 @@ static EfbCopyTarget *find_scan(u32 addr, unsigned width, unsigned height);
 /* Bumped whenever a copy target is (re)written or the table reset: anything
  * cached about which addresses are copies is stale once it moves. */
 u32 efb_copy_generation(void) { return s_find_gen; }
+
+u32 efb_copy_note_generation(void) { return s_note_gen; }
 
 EfbCopyTarget *efb_copy_find(u32 addr, unsigned width, unsigned height,
                              unsigned fmt)
@@ -335,6 +344,7 @@ unsigned efb_copy_index(const EfbCopyTarget *e)
 void efb_copy_reset(void)
 {
     s_find_gen++;
+    s_note_gen++;
     memset(s_targets, 0, sizeof s_targets);
     memset(&g_efb_copy, 0, sizeof g_efb_copy);
     s_serial = 0;

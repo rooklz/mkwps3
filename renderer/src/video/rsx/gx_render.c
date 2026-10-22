@@ -1484,10 +1484,11 @@ static void efb_bind_zero(gcmContextData *c, unsigned unit)
  * race frame issues ~17,000 binds and ~99% re-bind exactly what the unit
  * already holds; resolving each one through the EFB-copy lookup and the
  * texture-cache probe before discovering that cost ~0.7 us apiece. Same
- * registers, same frame, no EFB copy since, and the entry still clean is the
- * same bind. */
+ * registers, same frame, no change since to which addresses are EFB copies
+ * (and no copy at all, for a unit holding a copy's surface), and the entry
+ * still clean is the same bind. */
 static struct {
-    u32 addr, fmtwh, mode0, mode1, tlut, frame, cgen;
+    u32 addr, fmtwh, mode0, mode1, tlut, frame, cgen, ngen;
     TexEntry *e;                /* NULL: an EFB copy surface is bound */
     int valid;
 } s_ufast[8];
@@ -1502,6 +1503,7 @@ static void ufast_note(unsigned unit, const BPTexture *t, TexEntry *e)
     s_ufast[unit].tlut  = t->tlut;
     s_ufast[unit].frame = s_tex_frame;
     s_ufast[unit].cgen  = efb_copy_generation();
+    s_ufast[unit].ngen  = efb_copy_note_generation();
     s_ufast[unit].e     = e;
     s_ufast[unit].valid = 1;
 }
@@ -1517,7 +1519,8 @@ static void texcache_bind(gcmContextData *c, unsigned unit, const BPTexture *t,
         s_ufast[unit].mode1 == t->mode1 && s_ufast[unit].tlut == t->tlut &&
         s_ufast[unit].fmtwh == ((t->format << 26) ^ ((u32)t->width << 13) ^ t->height) &&
         s_ufast[unit].cgen == efb_copy_generation() &&
-        (!s_ufast[unit].e || tex_entry_clean(s_ufast[unit].e))) {
+        (s_ufast[unit].e ? tex_entry_clean(s_ufast[unit].e)
+                         : s_ufast[unit].ngen == efb_copy_note_generation())) {
         g_tex_binds++;
         g_tex_unit_skips++;
         return;

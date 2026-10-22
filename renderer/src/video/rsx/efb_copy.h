@@ -124,6 +124,9 @@ EfbCopyTarget *efb_copy_note(const BPCopy *c);
  * copy target is still a hit, because a title may sample a sub-rectangle.
  * Returns NULL when the bind should go through the ordinary decode path. */
 u32 efb_copy_generation(void);
+/* Bumped by every copy, including one into a target already there: a surface
+ * bound from a copy has to be bound again after it. */
+u32 efb_copy_note_generation(void);
 EfbCopyTarget *efb_copy_find(u32 addr, unsigned width, unsigned height,
                              unsigned fmt);
 
