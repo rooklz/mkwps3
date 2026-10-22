@@ -45,9 +45,11 @@ hardware. All of that is reimplemented ("high-level emulation", HLE) in `runtime
   shader programs, generated on the fly and cached. Texture formats get converted, and
   the Wii's tricks of copying bits of the screen into textures get recreated.
 - **The SPUs.** Decoding vertices, skinning character models and building index buffers
-  is exactly the kind of number-crunching the Cell's SPUs were made for, so five of them
+  is exactly the kind of number-crunching the Cell's SPUs were made for, so four of them
   do it in parallel (`renderer/spu/`). Runs of draws get batched into single SPU jobs and
-  single RSX draws.
+  single RSX draws. Another SPU reads the game's graphics command stream before the PPE
+  does (`platform/ps3/spu/gxf_spu.c`): it keeps its own copy of the GPU's registers and
+  only passes on the writes that actually change one, which is about 40% of them.
 - **Audio.** The Wii has a DSP that mixes up to 96 voices. Here that mixer is native C++:
   it decodes the game's ADPCM samples, resamples them, applies the volume envelopes and
   filters and mixes them down, then hands the result to the PS3's audio output.
@@ -57,10 +59,10 @@ hardware. All of that is reimplemented ("high-level emulation", HLE) in `runtime
 
 ## Where the time goes
 
-At the moment a full race costs the game thread about 27ms a frame on the PS3, against
-the 16.7ms it needs for 60fps, and the thread that turns the game's graphics commands into
-RSX ones needs about 22ms. The two share the PPE, so each slows the other down. That works
-out at around 30fps. (The benchmark lets the game's own CPU driver race the player's kart,
+At the moment a full race costs the game thread about 21ms a frame on the PS3, plus about
+2ms of audio, against the 16.7ms it needs for 60fps. The thread that turns the game's
+graphics commands into RSX ones needs about 17ms, some of it waiting. The two share the
+PPE, so each slows the other down. That works out at around 40fps. (The benchmark lets the game's own CPU driver race the player's kart,
 so it sees the same track and traffic a real race does.)
 
 The game itself is most of that: the PPE has to get through roughly eight million of the

@@ -12,6 +12,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../common/types.h"
@@ -397,6 +398,140 @@ int mkw_renderer_stats(char *out, unsigned cap)
 
 static int s_ready;
 
+/* SPU front-end check (gx_hw.cpp, mkwii-gxf-verify.txt): the PPU parser drives the
+ * renderer as usual while the SPU's records drive a second GXState that draws
+ * nothing, and at every draw the two must hold the same CP, BP and XF registers.
+ * Draws are matched by their order in the stream. */
+static int s_verify;
+static GXState s_shadow;
+
+#define VERIFY_RING 65536u
+static u32 s_vhash[2][VERIFY_RING][3];
+static u64 s_vcount[2];
+static u64 s_vchecked, s_vbad[3];
+/* The real side's BP file at each recent draw, to name the registers on a mismatch. */
+#define VERIFY_BP_RING 4096u
+static u32 (*s_vbp)[256];
+
+static u32 hash_words(const u32 *w, unsigned n)
+{
+    u32 h = 2166136261u;
+    unsigned i;
+    for (i = 0; i < n; i++)
+        h = (h ^ w[i]) * 16777619u;
+    return h;
+}
+
+static void verify_note(int side, const GXState *g)
+{
+    const u64 seq = s_vcount[side]++;
+    const u64 other = s_vcount[!side];
+    u32 *h = s_vhash[side][seq % VERIFY_RING];
+    h[0] = hash_words((const u32 *)&g->parser.cp, sizeof g->parser.cp / 4u);
+    h[1] = hash_words(g->bp.raw, 256);
+    h[2] = hash_words(g->xf.mem, XF_MEM_SIZE);
+    if (!s_vbp)
+        s_vbp = malloc(sizeof *s_vbp * VERIFY_BP_RING);
+    if (s_vbp && side == 0)
+        memcpy(s_vbp[seq % VERIFY_BP_RING], g->bp.raw, sizeof s_vbp[0]);
+    if (seq < other && other - seq < VERIFY_RING) {
+        const u32 *o = s_vhash[!side][seq % VERIFY_RING];
+        unsigned k;
+        int bad = 0;
+        for (k = 0; k < 3; k++)
+            if (h[k] != o[k]) {
+                s_vbad[k]++;
+                bad = 1;
+            }
+        s_vchecked++;
+        if (bad && s_vbad[0] + s_vbad[1] + s_vbad[2] <= 8) {
+            printf("[gxf] verify: draw %llu differs:%s%s%s\n", (unsigned long long)seq,
+                   h[0] != o[0] ? " cp" : "", h[1] != o[1] ? " bp" : "", h[2] != o[2] ? " xf" : "");
+            if (side == 1 && h[1] != o[1] && s_vbp && seq + VERIFY_BP_RING > s_vcount[0]) {
+                const u32 *real = s_vbp[seq % VERIFY_BP_RING], *mine = s_shadow.bp.raw;
+                unsigned r, shown = 0;
+                for (r = 0; r < 256 && shown < 8; r++)
+                    if (real[r] != mine[r]) {
+                        printf("[gxf]   bp %02x: ppu %06x spu %06x\n", r, (unsigned)real[r], (unsigned)mine[r]);
+                        shown++;
+                    }
+            }
+        }
+        if (s_vchecked % 20000u == 0)
+            printf("[gxf] verify: %llu draws checked, differing cp %llu bp %llu xf %llu\n",
+                   (unsigned long long)s_vchecked, (unsigned long long)s_vbad[0],
+                   (unsigned long long)s_vbad[1], (unsigned long long)s_vbad[2]);
+    }
+}
+
+int mkw_renderer_verify_stats(char *out, unsigned cap)
+{
+    return snprintf(out, cap, "gxf verify %llu checked, cp %llu bp %llu xf %llu\n",
+                    (unsigned long long)s_vchecked, (unsigned long long)s_vbad[0],
+                    (unsigned long long)s_vbad[1], (unsigned long long)s_vbad[2]);
+}
+
+static void shadow_load_cp(void *ctx, uint8_t reg, uint32_t value)
+{
+    (void)ctx;
+    gx_state_load_cp(&s_shadow, reg, value);
+}
+
+static void shadow_load_xf(void *ctx, uint16_t addr, const uint32_t *values, unsigned count)
+{
+    (void)ctx;
+    gx_state_load_xf(&s_shadow, addr, values, count);
+}
+
+static void shadow_load_bp(void *ctx, uint32_t word)
+{
+    (void)ctx;
+    gx_state_load_bp(&s_shadow, (u8)(word >> 24), word & 0x00FFFFFFu);
+}
+
+static void shadow_load_index(void *ctx, uint8_t op, uint16_t index, uint16_t xf_addr, uint8_t count)
+{
+    (void)ctx;
+    gx_state_load_index(&s_shadow, op, index, xf_addr, count);
+}
+
+static void shadow_draw(void *ctx, uint8_t primitive, unsigned vat, uint16_t count,
+                        const uint8_t *vertices, uint32_t vertex_size)
+{
+    (void)ctx; (void)primitive; (void)vat; (void)count; (void)vertices; (void)vertex_size;
+    verify_note(1, &s_shadow);
+}
+
+static void shadow_draw_run(void *ctx, unsigned vat, const uint8_t *commands, uint32_t bytes,
+                            uint32_t prims, uint32_t vertices, uint32_t indices, uint32_t vertex_size)
+{
+    (void)ctx; (void)vat; (void)commands; (void)bytes; (void)prims; (void)vertices; (void)indices;
+    (void)vertex_size;
+    verify_note(1, &s_shadow);
+}
+
+static const struct GxSink s_shadow_sink = {
+    0,
+    shadow_load_cp,
+    shadow_load_xf,
+    shadow_load_bp,
+    shadow_load_index,
+    shadow_draw,
+    0,
+    0,
+    0,
+    0,
+    shadow_draw_run,
+};
+
+/* The sink for the SPU's records in a verify run; the real one stays the PPU parser's. */
+const struct GxSink *mkw_renderer_shadow_sink(void)
+{
+    s_verify = 1;
+    gx_state_init(&s_shadow, NULL);
+    return &s_shadow_sink;
+}
+
 static void sink_start(void *ctx)
 {
     static GXBackend be;
@@ -480,6 +615,8 @@ static void sink_draw(void *ctx, uint8_t primitive, unsigned vat, uint16_t count
     /* Vertices are in guest memory: a display list, or the command ring the
      * runtime keeps inside the arena. Either way their guest address is the
      * arena offset in the cached mirror. */
+    if (s_verify)
+        verify_note(0, gx_state());
     prof_enter(PH_DRAWDISP);
     gx_state_draw(gx_state(), (GXPrimitive)primitive, vat, count,
                   (u32)(vertices - g_renderer_arena) | 0x80000000u, vertex_size);
@@ -492,6 +629,8 @@ static void sink_draw_run(void *ctx, unsigned vat, const uint8_t *commands, uint
     (void)ctx;
     if (!s_ready)
         return;
+    if (s_verify)
+        verify_note(0, gx_state());
     prof_enter(PH_DRAWDISP);
     gx_state_draw_run(gx_state(), vat, (u32)(commands - g_renderer_arena) | 0x80000000u, bytes,
                       prims, vertices, indices, vertex_size);

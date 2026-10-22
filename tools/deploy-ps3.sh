@@ -13,7 +13,7 @@ DEST="ftp://$PS3:$PORT/dev_hdd0/game/$APP/USRDIR"
 # The SPU programs are loaded from USRDIR at run time; a stale one looks like a hung SPU.
 # A build in another OUT (a measurement build) shares the main build's data
 # sections, which build-ps3.sh always writes to $GEN/build/ps3.
-for f in mkwii_sections.bin vtx_spu.elf ax_spu.elf RELOAD.SELF EBOOT.BIN; do
+for f in mkwii_sections.bin vtx_spu.elf ax_spu.elf gxf_spu.elf RELOAD.SELF EBOOT.BIN; do
     src=$OUT/$f
     [ -f "$src" ] || src=$GEN/build/ps3/$f
     curl -s -m 1800 -T "$src" "$DEST/$f"

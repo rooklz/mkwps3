@@ -39,10 +39,13 @@ static u32   s_nspu = 1;          /* consumers actually started */
 /* How many SPUs to run as vertex consumers. The console has six; this used
  * one. dolphin-spucount.txt overrides, which is how a bad count is backed out
  * without a rebuild. */
+extern int mkw_gxf_spu_mode(void) __attribute__((weak));
+
 static u32 spu_count_wanted(void)
 {
     FILE *f = fopen("/dev_hdd0/tmp/dolphin-spucount.txt", "r");
-    long v = 5;                   /* leave one SPU for the system */
+    /* six for the game: the audio mixer has one, the GX parser one when it runs */
+    long v = (mkw_gxf_spu_mode && mkw_gxf_spu_mode()) ? 4 : 5;
     if (f) { if (fscanf(f, "%ld", &v) != 1) v = 5; fclose(f); }
     if (v < 1) v = 1;
     if (v > SPU_VTX_MAX_SPU) v = SPU_VTX_MAX_SPU;
