@@ -109,22 +109,6 @@ inline void StoreS32(uint8_t* host, int32_t value) {
     BigEndian::Write32(host, static_cast<uint32_t>(value));
 }
 
-// PowerPC fctiwz: round toward zero, saturating out-of-range and NaN exactly the
-// way runtime/src/fpu_helpers.cpp does for the translated form.
-inline int32_t ConvertToIntegerWord(float value) {
-    const double wide = static_cast<double>(value);
-    if (std::isnan(wide)) {
-        return static_cast<int32_t>(0x80000000u);
-    }
-    if (wide >= 2147483647.0) {
-        return 2147483647;
-    }
-    if (wide <= -2147483648.0) {
-        return static_cast<int32_t>(0x80000000u);
-    }
-    return static_cast<int32_t>(wide);
-}
-
 // Guest-thread-only range resolver. Deliberately NOT the mix's MixResolveRange: this
 // callback must materialize deferred GX reads through the page table, which the
 // worker-safe resolver refuses to do by design.
@@ -224,60 +208,104 @@ bool BuildFrame(uint32_t buffersAddr, uint32_t stateAddr, Frame& frame) {
     return true;
 }
 
+// A frame of int32 samples to floats. The PPE's integer and float units only
+// meet through memory, and a value stored and loaded straight back stalls for
+// tens of cycles, so every store goes out before the first load comes back.
+inline void SamplesToFloat(const int64_t* raw, float* out, uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) {
+#if defined(__PPU__)
+        double bits;
+        std::memcpy(&bits, &raw[i], sizeof(bits));
+        double value;
+        __asm__("fcfid %0,%1" : "=f"(value) : "f"(bits));
+        out[i] = static_cast<float>(value);
+#else
+        out[i] = static_cast<float>(static_cast<int32_t>(raw[i]));
+#endif
+    }
+}
+
+// The fctiwz results' low words, read once they have all been stored.
+inline void StoreWords(uint8_t* dst, const double* converted, uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t word;
+        std::memcpy(&word, reinterpret_cast<const uint8_t*>(&converted[i]) + 4, sizeof(word));
+        StoreS32(dst + i * 4u, static_cast<int32_t>(word));
+    }
+}
+
+// The guest's fctiwz: round toward zero, saturating out-of-range values and
+// NaN, with the word in the double's low half.
+inline double ConvertToIntegerWordBits(float value) {
+    return PPC_Fctiwz(static_cast<double>(value));
+}
+
+// Channel by channel: the channels share nothing but the ring indices, so the
+// samples go through in the guest's order per channel, and each channel's
+// conversions batch up around its filter loop.
 void Render(uint32_t stateAddr, Frame& frame) {
     uint32_t index[kRingCount];
-    for (uint32_t ring = 0; ring < kRingCount; ++ring) {
-        index[ring] = frame.ringIndex[ring];
-    }
+    for (uint32_t channel = 0; channel < kChannels; ++channel) {
+        int64_t raw[kSamplesPerFrame];
+        float input[kSamplesPerFrame];
+        double mainBits[kSamplesPerFrame];
+        double auxBits[kSamplesPerFrame];
 
-    for (uint32_t sample = 0; sample < kSamplesPerFrame; ++sample) {
-        const uint32_t preDelayOffset = index[kRingPreDelay] * 4u;
-        const uint32_t earlyOffset = index[kRingEarly] * 4u;
-        const uint32_t comb1Offset = index[kRingComb1] * 4u;
-        const uint32_t comb2Offset = index[kRingComb2] * 4u;
-        const uint32_t allpass1Offset = index[kRingAllpass1] * 4u;
-        const uint32_t allpass2Offset = index[kRingAllpass2] * 4u;
-        const uint32_t frameOffset = sample * 4u;
-
-        for (uint32_t channel = 0; channel < kChannels; ++channel) {
-            uint8_t* const mainSlot = frame.main[channel] + frameOffset;
-            int32_t rawInput = LoadS32(mainSlot);
+        uint8_t* const mainBuffer = frame.main[channel];
+        for (uint32_t sample = 0; sample < kSamplesPerFrame; ++sample) {
+            int32_t rawInput = LoadS32(mainBuffer + sample * 4u);
             if (frame.hasAuxIn) {
                 rawInput = static_cast<int32_t>(
                     static_cast<uint32_t>(rawInput) +
-                    static_cast<uint32_t>(LoadS32(frame.auxIn[channel] + frameOffset)));
+                    static_cast<uint32_t>(LoadS32(frame.auxIn[channel] + sample * 4u)));
             }
-            const float input = static_cast<float>(rawInput);
+            raw[sample] = rawInput;
+        }
+        SamplesToFloat(raw, input, kSamplesPerFrame);
+
+        for (uint32_t ring = 0; ring < kRingCount; ++ring) {
+            index[ring] = frame.ringIndex[ring];
+        }
+        uint8_t* const preDelayRing = frame.ring[kRingPreDelay][channel];
+        uint8_t* const earlyRing = frame.ring[kRingEarly][channel];
+        uint8_t* const comb1Ring = frame.ring[kRingComb1][channel];
+        uint8_t* const comb2Ring = frame.ring[kRingComb2][channel];
+        uint8_t* const allpass1Ring = frame.ring[kRingAllpass1][channel];
+        uint8_t* const allpass2Ring = frame.ring[kRingAllpass2][channel];
+        float lastAllpass = frame.lastAllpass[channel];
+
+        for (uint32_t sample = 0; sample < kSamplesPerFrame; ++sample) {
+            const float in = input[sample];
 
             // Pre-delay comb: the tap that leaves the buffer also feeds the dry
             // (early) send. Every product is its own statement so the host
             // compiler cannot fuse a multiply into the following add.
-            uint8_t* const preDelaySlot = frame.ring[kRingPreDelay][channel] + preDelayOffset;
+            uint8_t* const preDelaySlot = preDelayRing + index[kRingPreDelay] * 4u;
             const float preDelayTap = LoadFloat(preDelaySlot);
             const float preDelayFeedback = preDelayTap * frame.preDelayCoef;
-            StoreFloat(preDelaySlot, input + preDelayFeedback);
+            StoreFloat(preDelaySlot, in + preDelayFeedback);
 
-            float excite = input;
+            float excite = in;
             if (frame.hasEarly) {
-                uint8_t* const earlySlot = frame.ring[kRingEarly][channel] + earlyOffset;
+                uint8_t* const earlySlot = earlyRing + index[kRingEarly] * 4u;
                 excite = LoadFloat(earlySlot);
-                StoreFloat(earlySlot, input);
+                StoreFloat(earlySlot, in);
             }
 
             const float dry = preDelayTap * frame.dryScale;
 
-            uint8_t* const comb1Slot = frame.ring[kRingComb1][channel] + comb1Offset;
+            uint8_t* const comb1Slot = comb1Ring + index[kRingComb1] * 4u;
             const float comb1Tap = LoadFloat(comb1Slot);
             const float comb1Feedback = comb1Tap * frame.comb1Coef;
             StoreFloat(comb1Slot, excite + comb1Feedback);
 
-            uint8_t* const comb2Slot = frame.ring[kRingComb2][channel] + comb2Offset;
+            uint8_t* const comb2Slot = comb2Ring + index[kRingComb2] * 4u;
             const float comb2Tap = LoadFloat(comb2Slot);
             const float comb2Feedback = comb2Tap * frame.comb2Coef;
             const float combSum = comb1Tap + comb2Tap;
             StoreFloat(comb2Slot, excite + comb2Feedback);
 
-            uint8_t* const allpass1Slot = frame.ring[kRingAllpass1][channel] + allpass1Offset;
+            uint8_t* const allpass1Slot = allpass1Ring + index[kRingAllpass1] * 4u;
             const float allpass1Tap = LoadFloat(allpass1Slot);
             const float allpass1Feedback = allpass1Tap * frame.allpassCoef;
             const float allpass1Store = combSum + allpass1Feedback;
@@ -286,11 +314,11 @@ void Render(uint32_t stateAddr, Frame& frame) {
             const float allpass1Out = allpass1Tap - allpass1Feedforward;
 
             const float dampedNew = frame.oneMinusDamping * allpass1Out;
-            const float dampedOld = frame.damping * frame.lastAllpass[channel];
+            const float dampedOld = frame.damping * lastAllpass;
             const float damped = dampedNew + dampedOld;
-            frame.lastAllpass[channel] = damped;
+            lastAllpass = damped;
 
-            uint8_t* const allpass2Slot = frame.ring[kRingAllpass2][channel] + allpass2Offset;
+            uint8_t* const allpass2Slot = allpass2Ring + index[kRingAllpass2] * 4u;
             const float allpass2Tap = LoadFloat(allpass2Slot);
             const float allpass2Feedback = allpass2Tap * frame.allpassCoef;
             const float allpass2Store = damped + allpass2Feedback;
@@ -301,19 +329,25 @@ void Render(uint32_t stateAddr, Frame& frame) {
             const float wet = allpass2Out * frame.wetScale;
             const float mixed = dry + wet;
             const float mainSample = mixed * frame.mainGain;
-            StoreS32(mainSlot, ConvertToIntegerWord(mainSample));
+            mainBits[sample] = ConvertToIntegerWordBits(mainSample);
             if (frame.hasAuxOut) {
                 const float auxSample = mixed * frame.auxGain;
-                StoreS32(frame.auxOut[channel] + frameOffset, ConvertToIntegerWord(auxSample));
+                auxBits[sample] = ConvertToIntegerWordBits(auxSample);
+            }
+
+            for (uint32_t ring = 0; ring < kRingCount; ++ring) {
+                if (ring == kRingEarly && !frame.hasEarly) {
+                    continue;
+                }
+                const uint32_t next = index[ring] + 1u;
+                index[ring] = next < frame.ringLength[ring] ? next : 0u;
             }
         }
+        frame.lastAllpass[channel] = lastAllpass;
 
-        for (uint32_t ring = 0; ring < kRingCount; ++ring) {
-            if (ring == kRingEarly && !frame.hasEarly) {
-                continue;
-            }
-            const uint32_t next = index[ring] + 1u;
-            index[ring] = next < frame.ringLength[ring] ? next : 0u;
+        StoreWords(mainBuffer, mainBits, kSamplesPerFrame);
+        if (frame.hasAuxOut) {
+            StoreWords(frame.auxOut[channel], auxBits, kSamplesPerFrame);
         }
     }
 
