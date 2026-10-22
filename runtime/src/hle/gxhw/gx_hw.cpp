@@ -390,20 +390,34 @@ void LoadCp(uint8_t reg, uint32_t value)
         g_sink->load_cp(g_sink->ctx, reg, value);
 }
 
+// The game thread's idle wait (IdleWaitUntil), and what ends it early: an
+// interrupt raised here.
+std::mutex g_idleLock;
+std::condition_variable g_idleWake;
+
+void WakeIdleGuest()
+{
+    { std::lock_guard<std::mutex> lock(g_idleLock); }
+    g_idleWake.notify_one();
+}
+
 void LoadBp(uint32_t word)
 {
     switch (word >> 24) {
     case 0x45:   // PE_DONE: the finish interrupt GXSetDrawDone waits for
         g_finishes.fetch_add(1, std::memory_order_relaxed);
         g_finishRaised.fetch_add(1, std::memory_order_release);
+        WakeIdleGuest();
         break;
     case 0x47:   // PE_TOKEN
     case 0x48: { // PE_TOKEN_INT
         const uint16_t token = static_cast<uint16_t>(word);
         __atomic_store_n(reinterpret_cast<uint16_t*>(g_shadow + kPeToken), token, __ATOMIC_RELEASE);
         g_tokens.fetch_add(1, std::memory_order_relaxed);
-        if ((word >> 24) == 0x48)
+        if ((word >> 24) == 0x48) {
             g_tokenRaised.fetch_add(1, std::memory_order_release);
+            WakeIdleGuest();
+        }
         break;
     }
     default:
@@ -865,6 +879,12 @@ bool InterruptPending()
 {
     return g_finishRaised.load(std::memory_order_acquire) != g_finishDelivered ||
            g_tokenRaised.load(std::memory_order_acquire) != g_tokenDelivered;
+}
+
+bool IdleWaitUntil(std::chrono::steady_clock::time_point until)
+{
+    std::unique_lock<std::mutex> lock(g_idleLock);
+    return g_idleWake.wait_until(lock, until, [] { return InterruptPending(); });
 }
 
 void ServiceInterrupts(CpuContext* cpu)
