@@ -11,12 +11,17 @@ ax_spu_test: ax_spu_test.cpp $(AX_SPU_DEPS)
 	$(CXX) -std=gnu++17 -O2 -Istub -I$(ROOT)/runtime/include -I$(ROOT)/runtime/src/hle/audio \
 		-I$(ROOT)/platform/ps3/spu $< -o $@
 
+ax_spu_vector_test: ax_spu_test.cpp $(AX_SPU_DEPS) stub/spu_intrinsics.h
+	$(CXX) -std=gnu++17 -O2 -DAXS_VECTOR_STUB -Istub -I$(ROOT)/runtime/include -I$(ROOT)/runtime/src/hle/audio \
+		-I$(ROOT)/platform/ps3/spu $< -o $@
+
 .PHONY: run clean
-run: ax_decode_test ax_spu_test
+run: ax_decode_test ax_spu_test ax_spu_vector_test
 	./ax_decode_test
 	./ax_spu_test
+	./ax_spu_vector_test
 
 clean:
-	rm -f ax_decode_test ax_spu_test
+	rm -f ax_decode_test ax_spu_test ax_spu_vector_test
 
 .DEFAULT_GOAL := run

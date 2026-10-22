@@ -28,6 +28,12 @@
 #define AXS_WM_BUSES 8u
 #define AXS_COEF_COUNT 0x800u
 
+/* With axs_v_check set, each vector kernel call is also run through the scalar loop
+ * and any difference counted in axs_v_mismatch. */
+static int axs_v_check;
+static uint32_t axs_v_mismatch;
+
+
 /* AXPBWii, field for field. */
 typedef struct { uint16_t volume, volume_delta; } AxsVolume;
 typedef struct {
@@ -191,11 +197,14 @@ static void axs_read_samples(AxsAccel *a, int16_t *out, uint32_t n)
             if (n - i < k) k = n - i;
             src = k ? axs_aram_range(current >> 1, ((current + k - 1) >> 1) - (current >> 1) + 1) : 0;
             if (src) {
-                const int32_t scale = 1 << (pred_scale & 0xf);
+                const uint32_t shift = pred_scale & 0xf;
+                const int16_t c1 = (int16_t)coef1, c2 = (int16_t)coef2;
                 int32_t y1 = yn1, y2 = yn2;
                 int16_t *dst = out + i;
                 uint32_t left = k;
-#define AXS_PUT(nib) do { int32_t v_ = scale * (nib) + ((0x400 + coef1 * y1 + coef2 * y2) >> 11); \
+                /* Every factor is a 16-bit value, so 16-bit multiplies give the same sums. */
+#define AXS_PUT(nib) do { int32_t v_ = (int32_t)((uint32_t)(nib) << shift) + \
+                          ((0x400 + c1 * (int16_t)y1 + c2 * (int16_t)y2) >> 11); \
                           v_ = v_ < -0x7fff ? -0x7fff : (v_ > 0x7fff ? 0x7fff : v_); \
                           y2 = y1; y1 = v_; *dst++ = (int16_t)v_; } while (0)
                 if (current & 1) {
@@ -292,11 +301,95 @@ static void axs_read_samples(AxsAccel *a, int16_t *out, uint32_t n)
 
 /* ---- resampling (ResampleLine, ResampleAudio) ----------------------------------- */
 
+#if defined(__SPU__) || defined(AXS_VECTOR_STUB)
+/* The 32-bit polyphase loop four taps per multiply pair: the taps and the phase's
+ * coefficients come in as halfword vectors, mule/mulo give t0c0, t2c2 and t1c1, t3c3,
+ * and the int32 sum is the scalar loop's (with fit32 it never leaves 32 bits). Eight
+ * outputs are stored at a time, so `out` must be 16-aligned and count a multiple of 8. */
+#include <spu_intrinsics.h>
+
+static inline vec_short8 axs_v_load8(const int16_t *p)
+{
+    const uintptr_t a = (uintptr_t)p;
+    const vec_short8 *q = (const vec_short8 *)(a & ~(uintptr_t)15);
+    const unsigned off = (unsigned)(a & 15);
+    return spu_or(spu_slqwbyte(q[0], off), spu_rlmaskqwbyte(q[1], (int)off - 16));
+}
+
+static uint32_t axs_resample_poly32_v(const int16_t *line, int16_t *out, uint32_t count,
+                                      uint32_t pos, uint32_t ratio, const int16_t *coeffs, uint32_t *read_out)
+{
+    /* {p0[0], p1[0], p0[1], p1[1]}, then the lane-0 and lane-1 columns of four products. */
+    static const vec_uchar16 interleave = {0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 20, 21, 22, 23};
+    static const vec_uchar16 column0 = {0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23};
+    static const vec_uchar16 column1 = {8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31};
+    static const vec_uchar16 pack = {2, 3, 6, 7, 10, 11, 14, 15, 18, 19, 22, 23, 26, 27, 30, 31};
+    uint32_t read = 0, i;
+    for (i = 0; i < count; i += 8) {
+        vec_int4 sums[2];
+        int g;
+        for (g = 0; g < 2; ++g) {
+            vec_int4 p[4];
+            int k;
+            for (k = 0; k < 4; ++k) {
+                uintptr_t ca;
+                vec_short8 t, c;
+                pos += ratio;
+                read += pos >> 16;
+                pos &= 0xffffu;
+                t = axs_v_load8(line + read);
+                ca = (uintptr_t)(coeffs + ((pos >> 9) << 2));
+                c = spu_slqwbyte(*(const vec_short8 *)(ca & ~(uintptr_t)15), (unsigned)(ca & 8));
+                p[k] = spu_add(spu_mule(t, c), spu_mulo(t, c));   /* t0c0+t1c1, t2c2+t3c3 */
+            }
+            {
+                const vec_int4 a = spu_shuffle(p[0], p[1], interleave);
+                const vec_int4 b = spu_shuffle(p[2], p[3], interleave);
+                vec_int4 v = spu_add(spu_shuffle(a, b, column0), spu_shuffle(a, b, column1));
+                v = spu_rlmaska(v, -15);
+                v = spu_sel(v, spu_splats(0x7fff), spu_cmpgt(v, spu_splats(0x7fff)));
+                v = spu_sel(v, spu_splats(-0x8000), spu_cmpgt(spu_splats(-0x8000), v));
+                sums[g] = v;
+            }
+        }
+        *(vec_short8 *)(out + i) = (vec_short8)spu_shuffle(sums[0], sums[1], pack);
+    }
+    *read_out = read;
+    return pos;
+}
+#endif
+
 static uint32_t axs_resample_line(const int16_t *line, int16_t *out, uint32_t count,
                                   int16_t *last, uint32_t pos, uint32_t ratio, uint16_t src_type,
                                   const int16_t *coeffs, int fit32)
 {
     uint32_t read = 0, i;
+#if defined(__SPU__) || defined(AXS_VECTOR_STUB)
+    if (coeffs && src_type == 0 && fit32 && (count & 7) == 0 && ((uintptr_t)out & 15) == 0 &&
+        ((uintptr_t)coeffs & 15) == 0) {
+        const uint32_t pos0 = pos;
+        pos = axs_resample_poly32_v(line, out, count, pos, ratio, coeffs, &read);
+        if (axs_v_check) {
+            uint32_t p = pos0, r = 0;
+            for (i = 0; i < count; ++i) {
+                const int16_t *t, *c;
+                p += ratio;
+                r += p >> 16;
+                p &= 0xffffu;
+                t = line + r;
+                c = coeffs + ((p >> 9) << 2);
+                if (out[i] != axs_clamp_s16((t[0] * c[0] + t[1] * c[1] + t[2] * c[2] + t[3] * c[3]) >> 15)) {
+                    ++axs_v_mismatch;
+                    break;
+                }
+            }
+            if (p != pos || r != read)
+                ++axs_v_mismatch;
+        }
+        memcpy(last, line + read, sizeof(int16_t) * 4);
+        return pos;
+    }
+#endif
     if (coeffs && src_type == 0) {
         for (i = 0; i < count; ++i) {
             const int16_t *t, *c;
@@ -521,6 +614,131 @@ static inline void axs_biquad(int16_t *s, uint32_t count, AxsBiquad *f)
     }
 }
 
+#if defined(__SPU__) || defined(AXS_VECTOR_STUB)
+/* The same two kernels four samples at a time, for a full frame of aligned samples.
+ *
+ * Each lane computes clamp((in * volume) >> 15) with in an int16 and volume the uint16
+ * ramp value, exactly as the scalar loop: mpy multiplies the halfwords as signed, so a
+ * volume of 0x8000 or more is short by in << 16, which is added back. The 32-bit
+ * product is exact either way, so the shift and clamp see the scalar loop's value. */
+#include <spu_intrinsics.h>
+
+static const vec_uchar16 axs_v_lo = {0x80, 0x80, 0, 1, 0x80, 0x80, 2, 3, 0x80, 0x80, 4, 5, 0x80, 0x80, 6, 7};
+static const vec_uchar16 axs_v_hi = {0x80, 0x80, 8, 9, 0x80, 0x80, 10, 11, 0x80, 0x80, 12, 13, 0x80, 0x80, 14, 15};
+static const vec_uchar16 axs_v_pack = {2, 3, 6, 7, 10, 11, 14, 15, 18, 19, 22, 23, 26, 27, 30, 31};
+
+static inline vec_int4 axs_v_scale(vec_int4 in32, vec_uint4 volume)
+{
+    /* in32 holds the sample in its low halfword (high halfword zero). */
+    const vec_int4 product = spu_add(spu_mulo((vec_short8)in32, (vec_short8)volume),
+                                     spu_and(spu_sl(in32, 16),
+                                             (vec_int4)spu_cmpgt(volume, spu_splats(0x7fffu))));
+    vec_int4 v = spu_rlmaska(product, -15);
+    v = spu_sel(v, spu_splats(0x7fff), spu_cmpgt(v, spu_splats(0x7fff)));
+    v = spu_sel(v, spu_splats(-0x8000), spu_cmpgt(spu_splats(-0x8000), v));
+    return v;
+}
+
+static inline vec_uint4 axs_v_ramp_start(uint16_t volume, uint16_t delta)
+{
+    const vec_uint4 steps = {0, 1, 2, 3};
+    return spu_and(spu_add(spu_splats((uint32_t)volume),
+                           spu_mulo((vec_ushort8)steps, (vec_ushort8)spu_splats((uint32_t)delta))),
+                   spu_splats(0xffffu));
+}
+
+/* axs_scale_ramp for count == 96, s 16-aligned. */
+static inline uint16_t axs_scale_ramp_v(int16_t *s, uint16_t volume, uint16_t delta)
+{
+    vec_short8 *p = (vec_short8 *)s;
+    vec_uint4 v = axs_v_ramp_start(volume, delta);
+    const vec_uint4 step = spu_splats((uint32_t)(uint16_t)(delta * 4u));
+    const vec_uint4 mask = spu_splats(0xffffu);
+    uint32_t i;
+    for (i = 0; i < AXS_SAMPLES_PER_FRAME / 8; ++i) {
+        const vec_short8 x = p[i];
+        const vec_int4 a = axs_v_scale((vec_int4)spu_shuffle(x, x, axs_v_lo), v);
+        v = spu_and(spu_add(v, step), mask);
+        const vec_int4 b = axs_v_scale((vec_int4)spu_shuffle(x, x, axs_v_hi), v);
+        v = spu_and(spu_add(v, step), mask);
+        p[i] = (vec_short8)spu_shuffle(a, b, axs_v_pack);
+    }
+    return (uint16_t)(volume + delta * AXS_SAMPLES_PER_FRAME);
+}
+
+/* axs_mix_add's loop for count == 96, out and in 16-aligned. Returns the last sample. */
+static inline int16_t axs_mix_add_v(int32_t *out, const int16_t *in, uint16_t volume, uint16_t delta)
+{
+    const vec_short8 *p = (const vec_short8 *)in;
+    vec_int4 *o = (vec_int4 *)out;
+    vec_uint4 v = axs_v_ramp_start(volume, delta);
+    const vec_uint4 step = spu_splats((uint32_t)(uint16_t)(delta * 4u));
+    const vec_uint4 mask = spu_splats(0xffffu);
+    vec_int4 b = spu_splats(0);
+    uint32_t i;
+    for (i = 0; i < AXS_SAMPLES_PER_FRAME / 8; ++i) {
+        const vec_short8 x = p[i];
+        const vec_int4 a = axs_v_scale((vec_int4)spu_shuffle(x, x, axs_v_lo), v);
+        v = spu_and(spu_add(v, step), mask);
+        b = axs_v_scale((vec_int4)spu_shuffle(x, x, axs_v_hi), v);
+        v = spu_and(spu_add(v, step), mask);
+        o[2 * i] = spu_add(o[2 * i], a);
+        o[2 * i + 1] = spu_add(o[2 * i + 1], b);
+    }
+    return (int16_t)spu_extract(b, 3);
+}
+#endif
+
+/* The vector kernels where they apply, the scalar ones everywhere else. */
+
+static inline uint16_t axs_scale_ramp_any(int16_t *s, uint32_t count, uint16_t volume, uint16_t delta)
+{
+#if defined(__SPU__) || defined(AXS_VECTOR_STUB)
+    if (count == AXS_SAMPLES_PER_FRAME && ((uintptr_t)s & 15) == 0) {
+        if (axs_v_check) {
+            int16_t ref[AXS_SAMPLES_PER_FRAME];
+            uint16_t ref_volume, result;
+            memcpy(ref, s, sizeof ref);
+            ref_volume = axs_scale_ramp(ref, count, volume, delta);
+            result = axs_scale_ramp_v(s, volume, delta);
+            if (result != ref_volume || memcmp(ref, s, sizeof ref) != 0)
+                ++axs_v_mismatch;
+            return result;
+        }
+        return axs_scale_ramp_v(s, volume, delta);
+    }
+#endif
+    return axs_scale_ramp(s, count, volume, delta);
+}
+
+static inline void axs_mix_add_any(int32_t *out, const int16_t *in, uint32_t count, AxsVolume *vd,
+                                   int16_t *dpop, int ramp)
+{
+#if defined(__SPU__) || defined(AXS_VECTOR_STUB)
+    const uint16_t delta = ramp ? vd->volume_delta : 0;
+    if (count == AXS_SAMPLES_PER_FRAME && ((uintptr_t)out & 15) == 0 && ((uintptr_t)in & 15) == 0) {
+        int32_t ref[AXS_SAMPLES_PER_FRAME];
+        AxsVolume ref_vd = *vd;
+        int16_t ref_dpop = *dpop;
+        if (axs_v_check) {
+            memcpy(ref, out, sizeof ref);
+            axs_mix_add(ref, in, count, &ref_vd, &ref_dpop, ramp);
+        }
+        if (vd->volume == 0 && delta == 0) {
+            *dpop = 0;
+        } else {
+            *dpop = axs_mix_add_v(out, in, vd->volume, delta);
+            vd->volume = (uint16_t)(vd->volume + delta * AXS_SAMPLES_PER_FRAME);
+        }
+        if (axs_v_check && (memcmp(ref, out, sizeof ref) != 0 || ref_vd.volume != vd->volume ||
+                            ref_dpop != *dpop))
+            ++axs_v_mismatch;
+        return;
+    }
+#endif
+    axs_mix_add(out, in, count, vd, dpop, ramp);
+}
+
 static uint32_t axs_mixer_control(uint32_t m)
 {
     uint32_t r = 0;
@@ -554,14 +772,14 @@ static int axs_process_voice(AxsPB *pb, int32_t *const *buses, uint32_t count, u
                              const int16_t *coeffs, int fit32, int new_filter)
 {
     AxsAccel accel;
-    int16_t samples[AXS_SAMPLES_PER_FRAME];
+    int16_t samples[AXS_SAMPLES_PER_FRAME] __attribute__((aligned(16)));
     if (pb->running != 1)
         return 0;
     memset(samples, 0, sizeof samples);
     axs_accel_setup(&accel, pb);
     axs_resample(&accel, pb, samples, count, coeffs, fit32);
     axs_accel_commit(&accel);
-    pb->vol_env.cur_volume = (int16_t)axs_scale_ramp(samples, count, (uint16_t)pb->vol_env.cur_volume,
+    pb->vol_env.cur_volume = (int16_t)axs_scale_ramp_any(samples, count, (uint16_t)pb->vol_env.cur_volume,
                                                      (uint16_t)pb->vol_env.cur_volume_delta);
     if (pb->lpf.on)
         axs_lpf(samples, count, &pb->lpf);
@@ -569,7 +787,7 @@ static int axs_process_voice(AxsPB *pb, int32_t *const *buses, uint32_t count, u
         axs_biquad(samples, count, &pb->filt.biquad);
 
 #define AXS_MIX(bit, rbit, bus, vd, dp) \
-    if (control & (bit)) axs_mix_add(buses[bus], samples, count, &pb->mixer.vd, &pb->dpop.dp, (control & (rbit)) != 0)
+    if (control & (bit)) axs_mix_add_any(buses[bus], samples, count, &pb->mixer.vd, &pb->dpop.dp, (control & (rbit)) != 0)
     AXS_MIX(AXS_MAIN_L, AXS_MAIN_L_RAMP, 0, main_left, main_left);
     AXS_MIX(AXS_MAIN_R, AXS_MAIN_R_RAMP, 1, main_right, main_right);
     AXS_MIX(AXS_MAIN_S, AXS_MAIN_S_RAMP, 2, main_surround, main_surround);
