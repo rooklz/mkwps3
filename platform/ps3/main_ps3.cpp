@@ -262,7 +262,8 @@ extern "C" int mkw_guest_sample(uint32_t* func, uint32_t* lr, uint32_t* sp)
 // divides: the race frame (Raceinfo+0x20, which Raceinfo::Update 0x805331B4
 // advances once a frame from the start of the countdown; the race itself starts
 // at frame 240), the time, the game thread's idle time and the GPU thread's busy
-// time in ns, how many random seeds were fixed, the race stage (Raceinfo+0x28:
+// time in ns, the audio pump's time in ns (part of the game thread's idle time:
+// the scheduler's idle loop runs it), how many random seeds were fixed, the race stage (Raceinfo+0x28:
 // 0 intro, 1 countdown, 2 racing) and whether a race exists at all (the Raceinfo
 // instance pointer at 0x809BD730, stored by Raceinfo::CreateInstance).
 extern "C" int mkw_mark(char* out, unsigned cap)
@@ -276,10 +277,11 @@ extern "C" int mkw_mark(char* out, unsigned cap)
     uint64_t tb;
     __asm__ volatile("mftb %0" : "=r"(tb));
     const GxHw::Stats s = GxHw::GetStats();
-    return snprintf(out, cap, "frame %u ns %llu idle %llu gpu %llu seeds %u stage %u race %d\n", frame,
+    return snprintf(out, cap, "frame %u ns %llu idle %llu gpu %llu audio %llu seeds %u stage %u race %d\n", frame,
                     static_cast<unsigned long long>(tb * 10000ull / 798ull),
                     static_cast<unsigned long long>(s.guestIdleNanos),
-                    static_cast<unsigned long long>(s.gpuBusyNanos), g_fixedSeedReads, stage,
+                    static_cast<unsigned long long>(s.gpuBusyNanos),
+                    static_cast<unsigned long long>(g_audioPollTicks * 10000ull / 798ull), g_fixedSeedReads, stage,
                     race ? 1 : 0);
 }
 

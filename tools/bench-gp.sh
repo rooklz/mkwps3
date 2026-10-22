@@ -7,7 +7,9 @@
 # (mkwii-fixedseed.txt), so every run races the same race and the numbers only
 # move when the code does.
 #
-# Prints fps, and game-thread and GPU-thread milliseconds per race frame.
+# Prints fps, and game-thread and GPU-thread milliseconds per race frame, and the
+# audio pump's: the game thread runs it from the scheduler's idle loop, so the game
+# figure leaves it out.
 # PCS=<secs> (PCS_TOP=<n>), GPROF=1 and HPROF=<gpu|game> also take a profile
 # inside the measured stretch; see each below. A profile costs the run a little
 # speed, so time a build without one.
@@ -85,12 +87,13 @@ done
 [ -n "$MARKS" ] && printf '%s\n' "$marks" >&2
 printf '%s\n' "$marks" | python3 -c '
 import sys
-rows = [[int(x) for x in line.split()[1:9:2]] for line in sys.stdin.read().split("\n") if line]
+rows = [[int(x) for x in line.split()[1:11:2]] for line in sys.stdin.read().split("\n") if line]
 def show(a, b, label):
-    (f0, n0, i0, g0), (f1, n1, i1, g1) = a, b
+    (f0, n0, i0, g0, a0), (f1, n1, i1, g1, a1) = a, b
     frames, wall = f1 - f0, (n1 - n0) / 1e6
     print(f"{label}race frames {f0}-{f1}: {frames / wall * 1000:.1f} fps, "
-          f"game {(wall - (i1 - i0) / 1e6) / frames:.2f} ms/frame, gpu {(g1 - g0) / 1e6 / frames:.2f} ms/frame")
+          f"game {(wall - (i1 - i0) / 1e6) / frames:.2f} ms/frame, gpu {(g1 - g0) / 1e6 / frames:.2f} ms/frame, "
+          f"audio {(a1 - a0) / 1e6 / frames:.2f} ms/frame")
 if len(rows) > 2:
     for a, b in zip(rows, rows[1:]):
         show(a, b, "  ")
