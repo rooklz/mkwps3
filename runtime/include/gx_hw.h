@@ -17,6 +17,7 @@
 //
 // Everything a renderer needs is handed to a GxSink on the GPU thread.
 
+#include <chrono>
 #include <cstdint>
 
 struct CpuContext;
@@ -84,6 +85,11 @@ void ServiceInterrupts(CpuContext* cpu);
 
 // True when an interrupt is waiting for ServiceInterrupts.
 bool InterruptPending();
+
+// Game thread, idle: sleeps until `until`, or until the GPU thread raises an
+// interrupt (true then). Most idle waits are for a finish or a token, and
+// sleeping out a fixed poll interval would hold the frame up that long.
+bool IdleWaitUntil(std::chrono::steady_clock::time_point until);
 
 // A VI retrace committed `xfb` for scan-out. The GPU thread shows the latest
 // request between commands; the guest only commits an XFB whose copy GXDrawDone

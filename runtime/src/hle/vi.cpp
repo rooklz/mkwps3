@@ -435,10 +435,19 @@ void VI_HLE_WaitForNextRetracePoll() {
     }
     // Audio DMA and alarm queues still need regular service even when the VI
     // deadline is farther away. The high-resolution wait removes the 1 ms
-    // scheduler overshoot when retrace is the next event.
+    // scheduler overshoot when retrace is the next event. Either wait ends
+    // early when the GPU thread raises an interrupt: most idle waits are for
+    // its finish or a token, and the frame shouldn't wait out the interval too.
     const bool retraceIsNext = retraceDeadline <= now + 1ms;
-    SleepPreciselyUntil(retraceIsNext ? retraceDeadline : now + 1ms, retraceIsNext,
-                        kFinalSpinWindow);
+    if (!retraceIsNext) {
+        GxHw::IdleWaitUntil(now + 1ms);
+        return;
+    }
+    if (retraceDeadline - now > kFinalSpinWindow &&
+        GxHw::IdleWaitUntil(retraceDeadline - kFinalSpinWindow)) {
+        return;
+    }
+    SleepPreciselyUntil(retraceDeadline, true, kFinalSpinWindow);
 }
 
 // VIInit (0x801B94A4) and its lower-level helper __VIInit (0x801B9294) both
