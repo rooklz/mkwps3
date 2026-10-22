@@ -1,6 +1,8 @@
-﻿using System.Text;
+﻿using System.Collections.Generic;
+using System.Text;
 using Translator.Core.Analysis;
 using Translator.Core.Analysis.Representation;
+using Translator.Core.Ir;
 using Translator.Core.Representation;
 
 namespace Translator.Core.CodeGen;
@@ -25,6 +27,37 @@ public sealed partial class CxxLinearCodeGenerator
         EmitInlineGuestThunkRange(spec, frameBase, sb, pad, types, frameBaseIsStack, isFloat, isStore);
         return true;
     }
+
+    /// <summary>
+    /// A call to a CodeWarrior runtime helper the body runs inline (<see cref="GuestRuntimeIntrinsics"/>):
+    /// <c>__cvt_fp2unsigned</c> becomes <c>PPC_CvtFp2UnsignedInline</c> on f1 into r3. Everything else it
+    /// touches -- f0, f2-f4, r4, cr0/cr6/cr7 and a frame below r1 -- is volatile under the EABI, so no
+    /// caller reads it, and the call's flush and reload around a body this small cost more than its work.
+    /// </summary>
+    private static bool TryEmitGuestRuntimeIntrinsic(
+        uint address,
+        StringBuilder sb,
+        string pad,
+        RepresentationEnvironment types,
+        Dictionary<string, bool> localPaired)
+    {
+        if (!IsGuestRuntimeIntrinsic(address))
+        {
+            return false;
+        }
+
+        var value = ToScalarFloatExpression(IrValue.Register("f1"), types, localPaired);
+        sb.AppendLine($"{pad}{RegisterToWriteExpression("r3", types)} = PPC_CvtFp2UnsignedInline({value});");
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a call to <paramref name="address"/> runs inline (<see cref="TryEmitGuestRuntimeIntrinsic"/>):
+    /// then it flushes and reloads nothing, and every pass that reasons about what a call leaves in the
+    /// context has to see it as the plain write of r3 it becomes.
+    /// </summary>
+    private static bool IsGuestRuntimeIntrinsic(uint address) =>
+        GuestRuntimeIntrinsics.Current.CvtFp2Unsigned == address && GuestEabiVisibility.Applies(address);
 
     private static void EmitInlineGuestThunkRange(
         InlineGuestThunkSpec spec,

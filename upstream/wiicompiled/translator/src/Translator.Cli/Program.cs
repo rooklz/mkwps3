@@ -57,6 +57,7 @@ var functionMap = project?.Translation.FunctionMapPath is { } functionMapPath
 if (functionMap is not null)
 {
     GuestSaveRestoreThunks.Current = GuestSaveRestoreThunks.FromFunctionMap(functionMap);
+    GuestRuntimeIntrinsics.Current = GuestRuntimeIntrinsics.FromFunctionMap(functionMap);
 }
 var root = project?.WorkspaceRoot ?? Directory.GetCurrentDirectory();
 var preferCachedInputs = HasFlag(tail, "--prefer-cached-inputs");
