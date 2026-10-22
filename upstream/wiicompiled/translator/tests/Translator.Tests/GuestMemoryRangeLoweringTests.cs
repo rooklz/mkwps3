@@ -212,7 +212,7 @@ public sealed class GuestMemoryRangeLoweringTests
     }
 
     [Fact]
-    public void OrdinaryCxxPipelineEnablesEightAccessScalarSuffixAfterCall()
+    public void OrdinaryCxxPipelineLeavesAccessesFlatUnlessAsked()
     {
         var instructions = new List<IrInstruction>
         {
@@ -232,8 +232,11 @@ public sealed class GuestMemoryRangeLoweringTests
             new FunctionAbiClassification("ordinary_epoch", ValueRepresentation.UInt32),
             types);
 
-        Assert.Contains("MemoryInline::ResolveRangeHost", code, System.StringComparison.Ordinal);
-        Assert.Equal(8, System.Text.RegularExpressions.Regex.Matches(code, "ReadResolved32").Count);
+        // The pass is opt-in (MKW_RANGE_LOWERING=1): on the flat arena eight reads through r3 are
+        // one fold and eight loads, with nothing to resolve.
+        Assert.DoesNotContain("ResolveRangeHost", code, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadResolved", code, System.StringComparison.Ordinal);
+        Assert.Contains("MemoryInline::FlatRead32(r3, 28)", code, System.StringComparison.Ordinal);
     }
 
     [Theory]
