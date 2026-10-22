@@ -34,7 +34,11 @@ inline thread_local uint32_t g_currentTranslatedExecutionAddress = 0;
 // and a store of the same word on every entry, a load-hit-store on the PPE
 // whenever two entries come close together.
 inline thread_local uint32_t g_translatedEntries = 0;
-#if defined(MKW_COUNT_CALLS) && MKW_COUNT_CALLS
+#if defined(MKW_COUNT_CALLS) && MKW_COUNT_CALLS == 2
+// MKW_COUNT_CALLS=2: entries per function, for the control port's `fncount`.
+extern "C" void mkw_fncount(uint32_t address);
+#define MKW_FN_ENTER(address) (MKW_FN_MARK(address), ++::RecompMod::g_translatedEntries, ::RecompMod::mkw_fncount(address))
+#elif defined(MKW_COUNT_CALLS) && MKW_COUNT_CALLS
 #define MKW_FN_ENTER(address) (MKW_FN_MARK(address), ++::RecompMod::g_translatedEntries)
 #else
 #define MKW_FN_ENTER(address) MKW_FN_MARK(address)

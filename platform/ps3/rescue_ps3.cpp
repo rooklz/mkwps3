@@ -215,6 +215,7 @@ extern "C" int mkw_where(char* out, unsigned cap);
 extern "C" void mkw_renderer_request_shot(void);
 extern "C" void mkw_renderer_request_ftrace(unsigned from);
 extern "C" int mkw_hprof_sample(int which, unsigned ms, const char* path);
+extern "C" void mkw_fncount_command(const char* arg, char* out, unsigned cap);
 extern "C" void mkw_renderer_request_copy_dump(int index);
 extern "C" void mkw_renderer_set_tev_show(int mode);
 extern "C" void mkw_renderer_skip_draws(unsigned min, unsigned max);
@@ -412,6 +413,12 @@ void Listener(void*)
                 // `slow on`, `slow off`, or `slow`: the guest functions that took memory slow paths.
                 char out[3072];
                 mkw_slow_census(cmd[4] == ' ' ? cmd + 5 : nullptr, out, sizeof out);
+                SendText(c, out);
+            } else if (!std::strncmp(cmd, "fncount", 7)) {
+                // `fncount reset`, or `fncount` to write the counts to /dev_hdd0/tmp/fncount.bin
+                // (a MKW_COUNT_CALLS=2 build).
+                char out[96];
+                mkw_fncount_command(cmd[7] == ' ' ? cmd + 8 : "", out, sizeof out);
                 SendText(c, out);
             } else if (!std::strncmp(cmd, "mark", 4)) {
                 char out[160];
