@@ -74,32 +74,38 @@ static void wait_tag_timed(int tag, uint32_t *ticks)
 
 /* ---- PBs: the last 128-aligned span read, kept current with our own writes ---------- */
 
-static uint8_t pb_line[4096] __attribute__((aligned(128)));
+/* 32 KB: AX keeps its PBs in one array, so the running checks, next pointers and PBs of
+ * every voice usually come in one window. */
+static uint8_t pb_line[32 * 1024] __attribute__((aligned(128)));
 static uint64_t pb_line_ea;
 static uint32_t pb_line_len;
+static uint32_t pb_line_guest;   /* the guest address pb_line starts at, as last asked for */
 
 static void axs_guest_get(void *dst, uint32_t addr, uint32_t bytes)
 {
-    uint64_t end = 0, ea = guest_ea(addr, bytes, &end);
+    uint64_t end = 0, ea;
+    if (pb_line_len && addr - pb_line_guest < pb_line_len && bytes <= pb_line_len - (addr - pb_line_guest)) {
+        memcpy(dst, pb_line + (addr - pb_line_guest), bytes);
+        return;
+    }
+    ea = guest_ea(addr, bytes, &end);
     if (!ea) {
         memset(dst, 0, bytes);
         ++g_bad;
         return;
     }
     if (!(pb_line_len && ea >= pb_line_ea && ea + bytes <= pb_line_ea + pb_line_len)) {
-        /* 4 KB from the line the read starts in: AX keeps its PBs in one array, so the
-         * running checks, next pointers and PBs of a dozen voices come in one DMA. */
         const uint64_t base = ea & ~127ull;
-        uint64_t len = sizeof pb_line;
-        if (len > sizeof pb_line)
-            len = sizeof pb_line;
+        uint64_t len = sizeof pb_line, done;
         if (base + len > end)
             len = end - base;          /* region ends are 16-aligned */
-        mfc_getf(pb_line, base, (uint32_t)len, TAG_PB, 0, 0);
+        for (done = 0; done < len; done += 16384)
+            mfc_getf(pb_line + done, base + done, (uint32_t)(len - done < 16384 ? len - done : 16384), TAG_PB, 0, 0);
         wait_tag_timed(TAG_PB, &g_wait_pb);
         pb_line_ea = base;
         pb_line_len = (uint32_t)len;
     }
+    pb_line_guest = addr - (uint32_t)(ea - pb_line_ea);
     memcpy(dst, pb_line + (ea - pb_line_ea), bytes);
 }
 
@@ -216,6 +222,8 @@ static void run_job(void)
     g_mem2 = job.mem2_ea;
     g_bad = 0;
     g_wait_pb = g_wait_smp = 0;
+    axs_v_check = (job.flags & AX_SPU_CHECK_VECTOR) != 0;
+    axs_v_mismatch = 0;
     pb_line_len = 0;
     put_used = 0;
     smp_lo = smp_hi = 0;   /* the game may have written new samples since the last frame */
@@ -246,6 +254,7 @@ static void run_job(void)
     result.ticks = t0 - spu_read_decrementer();
     result.wait_pb = g_wait_pb;
     result.wait_smp = g_wait_smp;
+    result.vector_mismatches = axs_v_mismatch;
     mfc_put(&result, job.result_ea, sizeof result, TAG_JOB, 0, 0);
     wait_tag(TAG_JOB);
 }

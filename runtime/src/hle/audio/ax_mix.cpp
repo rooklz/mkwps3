@@ -657,7 +657,15 @@ private:
         job->wmbus_ea = reinterpret_cast<uintptr_t>(m_wmBus.data());
         job->coef_ea = m_hasCoeffs ? reinterpret_cast<uintptr_t>(m_coeffs.data()) : 0;
         job->pb_addr = pbAddr;
-        job->flags = (newFilter ? AX_SPU_NEW_FILTER : 0u) | (m_coeffsFit32 ? AX_SPU_COEFFS_FIT32 : 0u);
+        // /dev_hdd0/tmp/mkwii-axcheck.txt: the SPU also runs its scalar kernels beside the
+        // vector ones and reports any difference.
+        static const bool check = [] {
+            FILE* f = std::fopen("/dev_hdd0/tmp/mkwii-axcheck.txt", "rb");
+            if (f) std::fclose(f);
+            return f != nullptr;
+        }();
+        job->flags = (newFilter ? AX_SPU_NEW_FILTER : 0u) | (m_coeffsFit32 ? AX_SPU_COEFFS_FIT32 : 0u) |
+                     (check ? AX_SPU_CHECK_VECTOR : 0u);
         job->nseg = static_cast<uint32_t>(count);
         for (size_t i = 0; i < count; ++i) {
             job->seg[i][0] = static_cast<uint16_t>(segments[i].guestOffset);
@@ -687,6 +695,10 @@ private:
             g_mixSpuTicks.fetch_add(result->ticks, std::memory_order_relaxed);
             g_mixSpuWaitPb.fetch_add(result->wait_pb, std::memory_order_relaxed);
             g_mixSpuWaitSmp.fetch_add(result->wait_smp, std::memory_order_relaxed);
+            if (result->vector_mismatches != 0 && !m_loggedSpuVectorMismatch.exchange(true, std::memory_order_relaxed)) {
+                RT_LOGF(RT_TAG_AUDIO, "SPU mixer: %u vector kernel calls differed from the scalar ones\n",
+                        result->vector_mismatches);
+            }
             if (result->bad != 0 && !m_loggedSpuBadAccess.exchange(true, std::memory_order_relaxed)) {
                 RT_LOGF(RT_TAG_AUDIO, "SPU mixer skipped %u guest accesses outside MEM1/MEM2\n", result->bad);
             }
@@ -1281,6 +1293,7 @@ private:
     std::atomic<bool> m_loggedUnknownCommand{false};
     std::atomic<bool> m_loggedCmdListTruncated{false};
     std::atomic<bool> m_loggedSpuBadAccess{false};
+    std::atomic<bool> m_loggedSpuVectorMismatch{false};
 
     // An SPU mix in flight (DispatchCommandList to FinishSpuMix), and where the command
     // list carries on after it.

@@ -11,6 +11,7 @@
 
 #define AX_SPU_NEW_FILTER   1u   /* the ucode runs the biquad (UCodeUsesNewFilter) */
 #define AX_SPU_COEFFS_FIT32 2u   /* every polyphase phase sums to <= 0xffff: 32-bit taps */
+#define AX_SPU_CHECK_VECTOR 4u   /* also run the scalar kernels and count differences */
 
 #define AX_SPU_HELLO 0xA0D10001u /* result.voices before the first job: the SPU is up */
 
@@ -37,7 +38,8 @@ typedef struct {
     uint32_t bad;          /* guest accesses outside MEM1/MEM2, skipped */
     uint32_t wait_pb;      /* of `ticks`, waiting for PB reads */
     uint32_t wait_smp;     /* of `ticks`, waiting for sample reads */
-    uint32_t pad[25];
+    uint32_t vector_mismatches; /* with AX_SPU_CHECK_VECTOR: vector kernel calls that differed */
+    uint32_t pad[24];
 } __attribute__((aligned(128))) AxSpuResult;
 
 #endif
