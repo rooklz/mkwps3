@@ -196,9 +196,29 @@ $(BLOB_OBJ): $(OUT)/data_sections_blobs.S
 	@echo "  AS   data_sections_blobs.S"
 	@$(CC) -c $< -o $@
 
-$(TARGET): $(ALL_OBJS)
+# The stock lv2.ld puts the unwind tables (.eh_frame_hdr, .eh_frame, .gcc_except_table) at
+# the end of the text segment. Once that segment reaches past 32 MiB every C++ throw hangs
+# (a profiling build 1.3 MB bigger than this one did, at its first throw during startup),
+# so they go after .rodata in the read-only data segment at 256 MiB instead.
+LDSCRIPT := $(OUT)/mkwii.ld
+LDSPECS  := $(OUT)/mkwii.specs
+
+$(LDSCRIPT): $(PS3DEV)/ppu/powerpc64-ps3-elf/lib/lv2.ld Makefile.ps3
+	@mkdir -p $(dir $@)
+	@sed -e '/^[[:space:]]*\.eh_frame_hdr[[:space:]]*:/d' \
+	     -e '/^[[:space:]]*\.eh_frame[[:space:]]*: ONLY_IF_RO/d' \
+	     -e '/^[[:space:]]*\.gcc_except_table[[:space:]]*: ONLY_IF_RO/d' \
+	     -e 's/^\([[:space:]]*\.rodata1[[:space:]]*:.*\)$$/\1\n\t.eh_frame_hdr : { *(.eh_frame_hdr) } : hdr_srodata\n\t.eh_frame : ONLY_IF_RO { KEEP (*(.eh_frame)) } : hdr_srodata\n\t.gcc_except_table : ONLY_IF_RO { *(.gcc_except_table .gcc_except_table.*) } : hdr_srodata/' \
+	     $< > $@
+	@grep -q 'eh_frame_hdr.*hdr_srodata' $@ || { echo "  lv2.ld has changed: the unwind tables were not moved"; rm -f $@; exit 1; }
+
+$(LDSPECS):
+	@mkdir -p $(dir $@)
+	@printf '*link_start_lv2:\n-T $(LDSCRIPT)\n' > $@
+
+$(TARGET): $(ALL_OBJS) $(LDSCRIPT) $(LDSPECS)
 	@echo "  LD   $(notdir $@)"
-	@$(CXX) $(ARCH) -Wl,--gc-sections -Wl,--no-ld-generated-unwind-info -Wl,--wrap=exit -Wl,--wrap=abort \
+	@$(CXX) $(ARCH) -specs=$(LDSPECS) -Wl,--gc-sections -Wl,--no-ld-generated-unwind-info -Wl,--wrap=exit -Wl,--wrap=abort \
 	    $(addprefix -Wl$(comma)--wrap=,printf vprintf fprintf vfprintf puts putchar fputs fputc fwrite fflush rename fsync) $(ALL_OBJS) $(LIBS) -o $@
 	@# crtbegin registers .eh_frame from __EH_FRAME_BEGIN__ and skips it when the
 	@# first word there is zero. ld's unwind info for its long-branch stubs once

@@ -275,6 +275,12 @@ template <typename T>
 inline std::optional<T> FindConfigValue(
     const toml::value& document, std::string_view section, std::string_view key) {
     try {
+        // A missing key is the common case: check before asking, as toml::find throws.
+        if (!document.is_table() || !document.contains(std::string(section)))
+            return std::nullopt;
+        const auto& table = document.at(std::string(section));
+        if (!table.is_table() || !table.contains(std::string(key)))
+            return std::nullopt;
         return toml::find<T>(document, std::string(section), std::string(key));
     } catch (const std::exception&) {
         return std::nullopt;
