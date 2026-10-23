@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <unistd.h>
 
 namespace {
@@ -127,6 +128,50 @@ int mkw_hprof_sample(int which, unsigned ms, const char* path)
     std::fwrite(buf, sizeof buf[0], n, f);
     std::fclose(f);
     return static_cast<int>(n / 2);
+}
+
+// Entries per translated function (a MKW_COUNT_CALLS=2 build calls this from every
+// function's entry). Open addressing on the address; a full table drops new functions.
+constexpr unsigned kFnSlots = 1u << 16;
+uint32_t g_fnAddr[kFnSlots];
+uint32_t g_fnCount[kFnSlots];
+
+void mkw_fncount(uint32_t address) __attribute__((no_instrument_function));
+void mkw_fncount(uint32_t address)
+{
+    unsigned i = (address >> 2) * 2654435761u >> 16;
+    for (unsigned probe = 0; probe < 64; ++probe, i = (i + 1) & (kFnSlots - 1)) {
+        if (g_fnAddr[i] == address) {
+            ++g_fnCount[i];
+            return;
+        }
+        if (g_fnAddr[i] == 0) {
+            g_fnAddr[i] = address;
+            g_fnCount[i] = 1;
+            return;
+        }
+    }
+}
+
+void mkw_fncount_command(const char* arg, char* out, unsigned cap)
+{
+    if (!std::strncmp(arg, "reset", 5)) {
+        std::memset(g_fnCount, 0, sizeof g_fnCount);
+        snprintf(out, cap, "reset\n");
+        return;
+    }
+    FILE* f = std::fopen("/dev_hdd0/tmp/fncount.bin", "wb");
+    unsigned n = 0;
+    if (f) {
+        for (unsigned i = 0; i < kFnSlots; ++i)
+            if (g_fnCount[i]) {
+                const uint32_t pair[2] = {g_fnAddr[i], g_fnCount[i]};
+                std::fwrite(pair, sizeof pair, 1, f);
+                ++n;
+            }
+        std::fclose(f);
+    }
+    snprintf(out, cap, "%u functions\n", n);
 }
 
 } // extern "C"

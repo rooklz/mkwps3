@@ -68,6 +68,9 @@ mark_at() {
     done
 }
 a=$(mark_at "$START") || { echo "the race never reached frame $START"; exit 1; }
+# FNCOUNT=1 on a MKW_COUNT_CALLS=2 build: entries per translated function over the stretch,
+# to $TMPDIR/bench-fncount.bin (pairs of big-endian address, count).
+[ -n "$FNCOUNT" ] && ctl "fncount reset" >/dev/null
 # PCS=<seconds>: also take a guest profile inside the measured stretch.
 [ -n "$PCS" ] && tools/ps3-pcs.sh "$PCS" "${PCS_TOP:-60}" > "${TMPDIR:-/tmp}/bench-pcs.txt" 2>&1
 # GPROF=1: also the renderer's phase profile (control port `prof`) over the stretch.
@@ -100,4 +103,8 @@ if len(rows) > 2:
 show(rows[0], rows[-1], "")
 '
 [ -n "$GPROF" ] && ctl prof > "${TMPDIR:-/tmp}/bench-gprof.txt"
+if [ -n "$FNCOUNT" ]; then
+    ctl fncount >/dev/null
+    curl -s -m 30 -o "${TMPDIR:-/tmp}/bench-fncount.bin" "ftp://$PS3_IP:${PS3_FTP_PORT:-21}/dev_hdd0/tmp/fncount.bin"
+fi
 tools/ps3-shot.sh "${TMPDIR:-/tmp}/bench-gp.png" >/dev/null 2>&1
