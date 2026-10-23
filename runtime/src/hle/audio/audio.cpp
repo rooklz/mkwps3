@@ -357,6 +357,18 @@ PPC_NATIVE_OVERRIDE(8015D57C, DSPAssertTask_8015d57c, uint32_t, (uint32_t taskPt
 
 // Each delivered block runs the AI DMA callback and deferred AX task callbacks before the
 // next block, preserving the SoundThread/DSP interleave order real hardware provides.
+// MKW_PUMP_PROFILE builds: the guest profiler (tools/ps3-pcs.sh) counts only samples taken
+// inside the audio pump, and the pump's own host phases show up under these small fake
+// addresses: 04 music attenuation, 08 the tick before the first block, 10 waiting for the
+// mix, 14 the block's push to the audio backend, 18 the AI callback (then guest code),
+// 1C deferred AX callbacks, 20 after them.
+#if defined(MKW_PUMP_PROFILE)
+#include "recomp_mod_loader.h"
+#define PUMP_MARK(id) (::RecompMod::g_currentTranslatedExecutionAddress = (id))
+#else
+#define PUMP_MARK(id) ((void)0)
+#endif
+
 void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
 {
     uint32_t startAddr = 0;
@@ -428,7 +440,9 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
         // that reads its PB write-back and aux buffers (__AXOutNewFrame via the AI DMA
         // callback), so the mix worker must finish first; the join also publishes its
         // aux-out shadow.
+        PUMP_MARK(0x10);
         AxDspHle::JoinMixWorker();
+        PUMP_MARK(0x14);
 
         if (!EnsureAudioBackend(sampleRate)) {
             std::lock_guard<std::mutex> lock(g_ai.mutex);
@@ -460,9 +474,12 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
                 }
             } else {
                 Memory::TryWrite32(kAICallbackBusyAddr, 1);
+                PUMP_MARK(0x18);
                 InvokeIndirectCpu(callback, cpu);
                 Memory::TryWrite32(kAICallbackBusyAddr, 0);
+                PUMP_MARK(0x1C);
                 AxDspHle::ServiceDeferredCallbacks();
+                PUMP_MARK(0x20);
             }
         }
 
@@ -528,8 +545,12 @@ extern "C" { uint64_t g_audioPollTicks = 0; }
 void Audio_HLE_Poll(CpuContext* ctx)
 {
     const uint64_t start = GxHw::HostTicks();
+    g_mkwInPump = 1;
+    PUMP_MARK(0x04);
     MusicAttenuation::TickGuest();
+    PUMP_MARK(0x08);
     Audio_HLE_Tick(ctx, static_cast<uint32_t>(ConsumeAudioPollDeltaMicros()));
+    g_mkwInPump = 0;
     g_audioPollTicks += GxHw::HostTicks() - start;
 }
 
