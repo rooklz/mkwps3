@@ -1,5 +1,7 @@
 # Press kit
 
+-- Thought it'd be fun to make some resources here for anyone creating content about this project. It's a bit sloppily made with image gen but I will remake these when I have the time at project completion :) --
+
 Free to use when writing or making videos about MKW PS3. A link back to the repo is
 appreciated.
 
