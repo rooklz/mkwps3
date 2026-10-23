@@ -11,6 +11,8 @@ inline const char* volatile g_mkwCrumb = "";
 inline void MkwCrumb(const char* what) { g_mkwCrumb = what; }
 // Set while the guest scheduler has nothing runnable; read by the sampler.
 inline volatile int g_mkwGuestIdle = 0;
+// Set while the scheduler's idle loop pumps audio (MKW_PUMP_PROFILE builds sample only then).
+inline volatile int g_mkwInPump = 0;
 
 // VI Utils
 void VI_HLE_ForceRetrace(CpuContext* ctx);

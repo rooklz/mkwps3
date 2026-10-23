@@ -253,6 +253,10 @@ extern "C" int mkw_guest_sample(uint32_t* func, uint32_t* lr, uint32_t* sp)
     if (!g_guestExecAddr)
         return 0;
     *func = *g_guestExecAddr;
+#if defined(MKW_PUMP_PROFILE)
+    if (!g_mkwInPump)
+        *func = 1;   // only the audio pump's samples count
+#endif
     *lr = cpu ? cpu->lr : 0;
     *sp = cpu ? cpu->gpr[1] : 0;
     return 1;
@@ -375,6 +379,10 @@ extern "C" int mkw_guest_stack(uint32_t* out, unsigned cap)
     };
     unsigned n = 0;
     out[n++] = g_mkwGuestIdle ? 1u : *g_guestExecAddr;
+#if defined(MKW_PUMP_PROFILE)
+    if (!g_mkwInPump)
+        out[0] = 1;
+#endif
     out[n++] = cpu->lr;
     uint32_t sp = cpu->gpr[1];
     while (n < cap) {

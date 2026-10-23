@@ -86,10 +86,14 @@ public:
     template <typename Native, typename Reference>
     void Run(const Region* regions, int count, Native native, Reference reference)
     {
-        static constexpr uint32_t kMaxBytes = 4096;
-        // Static: guest threads run on fibers with small stacks, and only
-        // one runs at a time.
-        static uint8_t before[4][kMaxBytes], after[4][kMaxBytes];
+        // Up to 80 KB a region (AX's voice blocks are 70 KB). Allocated on first
+        // use (one set per kind of check), so a build without the difftest carries none of it.
+        static constexpr uint32_t kMaxBytes = 80 * 1024;
+        static uint8_t* buffers = nullptr;
+        if (!buffers)
+            buffers = new uint8_t[8 * kMaxBytes];
+        uint8_t (*before)[kMaxBytes] = reinterpret_cast<uint8_t (*)[kMaxBytes]>(buffers);
+        uint8_t (*after)[kMaxBytes] = reinterpret_cast<uint8_t (*)[kMaxBytes]>(buffers + 4 * kMaxBytes);
         if (count > 4)
             count = 4;
         for (int i = 0; i < count; ++i) {

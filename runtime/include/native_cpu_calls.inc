@@ -86,12 +86,16 @@ void MSL_fill_mem_HLE(uint32_t dst, uint32_t value, uint32_t n);
 void MSL_memset_HLE(uint32_t dst, uint32_t value, uint32_t n);
 void PSMTXConcat_HLE(uint32_t a, uint32_t b, uint32_t ab);
 void PSMTXMultVec_HLE(uint32_t m, uint32_t src, uint32_t dst);
+void AX_SyncPBs_HLE(uint32_t baseCycles);
+void VoiceManager_NotifyVoiceUpdate_HLE(uint32_t self);
 
 MKW_KNOWN_LEAF_NATIVE_VOID(0x80005F34u, MSL_memcpy_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
 MKW_KNOWN_LEAF_NATIVE_VOID(0x80005F84u, MSL_fill_mem_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
 MKW_KNOWN_LEAF_NATIVE_VOID(0x80006038u, MSL_memset_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
 MKW_KNOWN_LEAF_NATIVE_VOID(0x80199D64u, PSMTXConcat_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
 MKW_KNOWN_LEAF_NATIVE_VOID(0x8019A91Cu, PSMTXMultVec_HLE, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
+MKW_KNOWN_LEAF_NATIVE_VOID(0x801277A8u, AX_SyncPBs_HLE, cpu->gpr[3]);
+MKW_KNOWN_LEAF_NATIVE_VOID(0x800AC9F0u, VoiceManager_NotifyVoiceUpdate_HLE, cpu->gpr[3]);
 
 #undef MKW_KNOWN_LEAF_NATIVE_VOID
 

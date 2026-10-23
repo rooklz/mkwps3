@@ -23,3 +23,15 @@
 #include "functions/func_8019A91C.cpp"
 #undef func_8019A91C
 #endif
+
+#if defined(MKW_NATIVE_DIFFTEST)
+#define func_801277A8 mkw_ref_801277A8
+#include "functions/func_801277A8.cpp"
+#undef func_801277A8
+#endif
+
+#if defined(MKW_NATIVE_DIFFTEST)
+#define func_8008A6F0 mkw_ref_8008A6F0
+#include "functions/func_8008A6F0.cpp"
+#undef func_8008A6F0
+#endif
