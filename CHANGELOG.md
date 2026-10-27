@@ -2,6 +2,10 @@
 
 What's changed, newest first. Dates are when it landed on `main`.
 
+## 2026-10-27
+
+- **Discontinued.** Work has stopped and the repo is archived. See the README for why.
+
 ## Unreleased
 
 The first public version.

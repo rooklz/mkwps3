@@ -9,11 +9,16 @@
 <p align="center">
   <a href="LICENSE"><img alt="Licence: GPL-3.0" src="https://img.shields.io/badge/licence-GPL--3.0-blue"></a>
   <img alt="Platform: PS3" src="https://img.shields.io/badge/platform-PS3-0b1e5b">
-  <img alt="Status: work in progress" src="https://img.shields.io/badge/status-work%20in%20progress-orange">
-  <a href="https://github.com/rooklz/mkwps3/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/rooklz/mkwps3/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Status: discontinued" src="https://img.shields.io/badge/status-discontinued-lightgrey">
 </p>
 
 ---
+
+> [!WARNING]
+> **This project is discontinued and the repo is archived.** I've stopped working on it,
+> and issues and pull requests are closed. Everything below still works as described, but
+> nothing will be fixed or updated. If you want to carry it on, fork it; it's GPL-3.0.
+> [Why it stopped](#why-it-stopped) has the details.
 
 It's built on [WiiCompiled](https://github.com/patchzyy/Wiicompiled), the recompiler
 behind the PC port, with everything the game expects from a Wii rebuilt around the PS3's
@@ -39,7 +44,7 @@ the recompiler has picked up a few tricks for the Cell along the way.
 
 ## Where it's at
 
-It's very much a work in progress, but it's further along than you might expect.
+This is where it stood when work stopped.
 
 | | |
 | --- | --- |
@@ -48,7 +53,7 @@ It's very much a work in progress, but it's further along than you might expect.
 | ✅ Sound and music | Mixed on the console in real time |
 | ✅ Saves and licences | Kept on the PS3's hard drive |
 | ✅ DualShock 3 | Presented to the game as a GameCube controller |
-| ⚠️ Speed | Around **30fps** in a full race. 60 is the goal and the main thing I'm working on |
+| ⚠️ Speed | About **40fps** in a full race, so the race runs at roughly two-thirds speed. It never reached full speed |
 | ✅ Karts and characters | Properly lit and coloured now (they used to be dark silhouettes) |
 | ⚠️ Some effects | Mii heads come out as black squares, so the crowd looks a bit odd. There'll be other bits that aren't quite right yet too |
 | ❓ VS, Time Trials, Battle | Should work, but they've had a lot less testing |
@@ -158,28 +163,25 @@ The translation is pinned to the exact PAL executable, same as WiiCompiled. Othe
 would need their own work, and a wrong-version disc gives you a subtly broken game,
 so the build refuses anything that isn't a clean `RMCP01`.
 
-**Why not 60fps yet, and will it get there?**
+**Why not 60fps?**
 The PS3's main CPU core has to get through about eight million of the Wii's instructions
 every frame, plus everything the Wii's other chips did for free. In a full race that's
-about 27ms a frame right now, and it needs to be under 16.7ms for 60. It keeps getting faster, so yeah,
-that's the plan. Until then the game runs a bit slower than it does on a Wii, because it
-counts time in frames.
+about 21ms a frame, and it needs to be under 16.7ms for 60. Because the game counts time
+in frames, it runs slower than on a Wii rather than dropping frames.
 
 **Does it work on a Slim or Super Slim?**
 It should. They've all got the same Cell and RSX inside. If yours can run homebrew,
 give it a go and let me know.
 
 **Online play?**
-Not yet.
+No.
 
 **Retro Rewind and other mods?**
 WiiCompiled can build Retro Rewind on PC, but that's not wired up on the PS3 yet.
 
 **It crashed / froze / looks wrong.**
-Please [open an issue](https://github.com/rooklz/mkwps3/issues/new/choose) and attach
-the log from `/dev_hdd0/tmp/mkwii-ps3.log` (webMAN's file manager or FTP will get it
-off the console). Only report things that are different from the real game on a Wii,
-not the game's own quirks.
+The repo is archived, so there's nowhere to report it any more. The log is at
+`/dev_hdd0/tmp/mkwii-ps3.log` if you want to dig in yourself.
 
 ## How it works
 
@@ -192,11 +194,23 @@ console the way the Wii's DSP would have.
 There's a longer, still fairly readable version in
 [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
 
-## Working on it
+## Why it stopped
 
-If you want to hack on it, [docs/BUILDING.md](docs/BUILDING.md) covers the developer
-setup: building without Docker, pushing builds straight to the console over the
-network, and the debugging tools. [CONTRIBUTING.md](CONTRIBUTING.md) has the ground rules.
+Full speed turned out to be out of reach. Even with the renderer switched off entirely,
+the game's own code takes about 18.7ms a frame on the PS3's main core, against a 16.7ms
+budget, and the profile is flat: no single hot spot left to fix. Every big idea got
+measured. A native PowerPC-to-Cell backend came out 2.5 times slower than the C++
+translation. Passing arguments in registers, moving audio to the SPUs and porting hot
+functions each gained 0.1ms or less. A 30fps mode that draws every other frame got the
+race to 0.93× speed, but some effects then ran at half rate. It also still wouldn't have
+covered three- and four-player split-screen, which the Wii itself only runs at 30fps.
+
+## Carrying it on
+
+Fork it. [docs/BUILDING.md](docs/BUILDING.md) covers the developer setup: building
+without Docker, pushing builds straight to the console over the network, and the
+debugging tools. [CONTRIBUTING.md](CONTRIBUTING.md) has the ground rules the project ran
+on, and [AGENTS.md](AGENTS.md) lists where everything lives.
 
 Help is very welcome, especially from anyone who knows their way around the RSX or the SPUs.
 
