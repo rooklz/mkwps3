@@ -18,7 +18,8 @@
 > **This project is discontinued and the repo is archived.** I've stopped working on it,
 > and issues and pull requests are closed. Everything below still works as described, but
 > nothing will be fixed or updated. If you want to carry it on, fork it; it's GPL-3.0.
-> [Why it stopped](#why-it-stopped) has the details.
+> [Why it stopped](#why-it-stopped) has the details, and
+> [docs/LESSONS.md](docs/LESSONS.md) has everything we learned.
 
 It's built on [WiiCompiled](https://github.com/patchzyy/Wiicompiled), the recompiler
 behind the PC port, with everything the game expects from a Wii rebuilt around the PS3's
